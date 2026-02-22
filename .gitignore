@@ -1,0 +1,15 @@
+# Временные файлы Altium
+History/
+__Backup/
+*.PcbDoc.htm
+*.SchDoc.htm
+
+# Логи и результаты компиляции
+Project Outputs for */
+Status Report.txt
+*.LOG
+*.ERR
+
+# Пользовательские настройки (не нужны коллегам)
+*.Canvas
+*.DXPPrj
