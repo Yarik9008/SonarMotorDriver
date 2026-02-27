@@ -2,15 +2,20 @@
  * @file biss_c.c
  * @brief Реализация драйвера BiSS C для энкодеров LENZ IRS.
  *
- * Принцип работы:
- *   SPI используется как генератор тактового сигнала MA и приёмник данных SLO.
- *   При каждом вызове BiSS_Read() STM32 отправляет 10 байт (80 тактов) по SPI,
- *   одновременно принимая ответ от энкодера на линии MISO.
+ * Связь с энкодером организована через full-duplex RS-422 трансивер THVD1452:
+ *   TX: STM32 SPI_SCK → THVD1452 D → Y/Z (диф. пара) → энкодер MA+/MA-
+ *   RX: энкодер SLO+/SLO- → THVD1452 A/B → R → STM32 SPI_MISO
  *
- *   В полученном потоке битов ищется структура кадра BiSS C:
- *     [ACK: SLO=1] -> [Start: SLO=0] -> [CDS=1: данные готовы] -> [SCD: 32 бита данных]
+ * Управление трансивером:
+ *   DE = HIGH — драйвер (передатчик) включён, тактовый сигнал MA идёт на шину
+ *   RE = LOW  — приёмник включён, данные SLO поступают в STM32
  *
- *   Из 32-битного SCD извлекаются позиция, биты Error/Warning и CRC6.
+ * SPI используется как генератор тактового сигнала MA и приёмник данных SLO.
+ * При каждом вызове BiSS_Read() STM32 отправляет 10 байт (80 тактов) по SPI,
+ * одновременно принимая ответ от энкодера на линии MISO.
+ *
+ * В полученном потоке битов ищется структура кадра BiSS C:
+ *   [ACK: SLO=1] -> [Start: SLO=0] -> [CDS=1: данные готовы] -> [SCD: 32 бита данных]
  */
 
 #include "biss_c.h"
@@ -22,8 +27,12 @@
  */
 #define BISS_FRAME_BYTES  10
 
-static SPI_HandleTypeDef hspi_biss;  /**< Хэндл SPI для связи с энкодером */
-static uint8_t           g_resolution; /**< Разрешение энкодера (17 или 18 бит) */
+static SPI_HandleTypeDef hspi_biss;     /**< Хэндл SPI для связи с энкодером */
+static uint8_t           g_resolution;  /**< Разрешение энкодера (17 или 18 бит) */
+static GPIO_TypeDef     *g_de_port;     /**< Порт пина DE трансивера THVD1452 */
+static uint16_t          g_de_pin;      /**< Пин DE трансивера */
+static GPIO_TypeDef     *g_re_port;     /**< Порт пина RE трансивера THVD1452 */
+static uint16_t          g_re_pin;      /**< Пин RE трансивера */
 
 /**
  * @brief Вычисление CRC-6 по стандарту BiSS.
@@ -50,12 +59,14 @@ static uint8_t biss_crc6(uint32_t data, uint8_t nbits)
 }
 
 /**
- * @brief Инициализация SPI1 и GPIO для работы с энкодером.
+ * @brief Инициализация SPI1, GPIO и управления трансивером THVD1452.
  *
  * Настраивает:
- *   - PA5 (SPI1_SCK) как альтернативный выход push-pull -> тактовый сигнал MA
- *   - PA6 (SPI1_MISO) как вход с подтяжкой к +3.3В -> данные SLO
- *   - SPI1 в режиме Master, ~1.125 МГц (APB2 72 МГц / 64)
+ *   - PA5 (SPI1_SCK)  — альтернативный выход push-pull → D (THVD1452) → MA
+ *   - PA6 (SPI1_MISO) — вход с подтяжкой к +3.3В ← R (THVD1452) ← SLO
+ *   - DE pin — выход push-pull, HIGH → включает драйвер (TX: MA)
+ *   - RE pin — выход push-pull, LOW  → включает приёмник (RX: SLO)
+ *   - SPI1 в режиме Master, 0.75 МГц (APB2 48 МГц / 64)
  *
  * Режим SPI: CPOL=0, CPHA=1 (захват по заднему фронту) —
  * оптимален для BiSS C, где данные стабильны на заднем фронте MA.
@@ -63,23 +74,41 @@ static uint8_t biss_crc6(uint32_t data, uint8_t nbits)
 BiSS_Status BiSS_Init(const BiSS_Config *cfg)
 {
     g_resolution = cfg->resolution_bits;
+    g_de_port    = cfg->de_port;
+    g_de_pin     = cfg->de_pin;
+    g_re_port    = cfg->re_port;
+    g_re_pin     = cfg->re_pin;
 
     __HAL_RCC_SPI1_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
 
-    /* PA5 = SPI1_SCK — тактовый сигнал MA для энкодера */
+    /* PA5 = SPI1_SCK → THVD1452 D → Y/Z → MA+/MA- */
     gpio.Pin   = GPIO_PIN_5;
     gpio.Mode  = GPIO_MODE_AF_PP;
     gpio.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &gpio);
 
-    /* PA6 = SPI1_MISO — данные SLO от энкодера (подтяжка вверх: idle = 1) */
+    /* PA6 = SPI1_MISO ← THVD1452 R ← A/B ← SLO+/SLO- (подтяжка: idle = 1) */
     gpio.Pin  = GPIO_PIN_6;
     gpio.Mode = GPIO_MODE_INPUT;
     gpio.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOA, &gpio);
+
+    /* DE (Driver Enable): active HIGH — включаем передатчик MA */
+    gpio.Pin   = g_de_pin;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Pull  = GPIO_NOPULL;
+    HAL_GPIO_Init(g_de_port, &gpio);
+    HAL_GPIO_WritePin(g_de_port, g_de_pin, GPIO_PIN_SET);
+
+    /* RE (Receiver Enable): active LOW — включаем приёмник SLO */
+    gpio.Pin = g_re_pin;
+    HAL_GPIO_Init(g_re_port, &gpio);
+    HAL_GPIO_WritePin(g_re_port, g_re_pin, GPIO_PIN_RESET);
 
     /* Настройка SPI1 как Master */
     hspi_biss.Instance               = cfg->spi_instance;

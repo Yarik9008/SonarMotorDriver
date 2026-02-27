@@ -5,13 +5,11 @@
  * Протокол BiSS C использует SPI-подобный обмен: ведущий (STM32) генерирует
  * тактовый сигнал MA, ведомый (энкодер) отвечает данными на линии SLO.
  *
- * Аппаратное подключение (нужны RS422-трансиверы):
- *   STM32 SPI_SCK  --> RS422 драйвер   --> MA+/MA-  (такт для энкодера)
- *   STM32 SPI_MISO <-- RS422 приёмник   <-- SLO+/SLO- (данные от энкодера)
- *
- * Пины по умолчанию (SPI1):
- *   PA5 = SCK  -> MA
- *   PA6 = MISO <- SLO
+ * Аппаратное подключение через THVD1452 (full-duplex RS-422 трансивер):
+ *   STM32 PA5 (SPI_SCK)  --> THVD1452 D  --> Y/Z --> MA+/MA-  (такт)
+ *   STM32 PA6 (SPI_MISO) <-- THVD1452 R  <-- A/B <-- SLO+/SLO- (данные)
+ *   STM32 GPIO (DE)       --> THVD1452 DE  (HIGH = драйвер включён)
+ *   STM32 GPIO (RE)       --> THVD1452 RE  (LOW  = приёмник включён)
  *
  * Формат кадра BiSS C SCD (32 бита, передаётся старшим битом вперёд):
  *   Биты [31:8]  — 24-битная абсолютная позиция
@@ -49,8 +47,12 @@ typedef struct {
 
 /** Параметры инициализации драйвера */
 typedef struct {
-    SPI_TypeDef *spi_instance;    /**< Экземпляр SPI (например SPI1) */
-    uint8_t      resolution_bits; /**< Разрешение энкодера: 17 или 18 бит */
+    SPI_TypeDef    *spi_instance;    /**< Экземпляр SPI (например SPI1) */
+    uint8_t         resolution_bits; /**< Разрешение энкодера: 17 или 18 бит */
+    GPIO_TypeDef   *de_port;         /**< Порт GPIO пина DE трансивера THVD1452 */
+    uint16_t        de_pin;          /**< Пин DE (Driver Enable, active HIGH) */
+    GPIO_TypeDef   *re_port;         /**< Порт GPIO пина RE трансивера THVD1452 */
+    uint16_t        re_pin;          /**< Пин RE (Receiver Enable, active LOW) */
 } BiSS_Config;
 
 /**

@@ -45,10 +45,18 @@ int main(void)
      * Настройка драйвера энкодера.
      * resolution_bits = 17 для моделей IRS-I34/I50/I60.
      * Для моделей IRS-I70/I80/I90 поставить 18.
+     *
+     * Управление трансивером THVD1452:
+     *   PB0 = DE (Driver Enable)  — HIGH включает передатчик (MA clock)
+     *   PB1 = RE (Receiver Enable) — LOW включает приёмник (SLO data)
      */
     BiSS_Config enc_cfg = {
         .spi_instance    = SPI1,
         .resolution_bits = 17,
+        .de_port         = GPIOB,
+        .de_pin          = GPIO_PIN_0,
+        .re_port         = GPIOB,
+        .re_pin          = GPIO_PIN_1,
     };
     BiSS_Init(&enc_cfg);
     HAL_Delay(50); /* Время готовности энкодера после подачи питания — 50 мс */
