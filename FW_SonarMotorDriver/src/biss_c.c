@@ -2,7 +2,7 @@
  * @file biss_c.c
  * @brief Реализация драйвера BiSS C для энкодеров LENZ IRS.
  *
- * Связь с энкодером организована через full-duplex RS-422 трансивер THVD1452:
+ * Связь с энкодером организована через полнодуплексный RS-422 трансивер THVD1452:
  *   TX: STM32 SPI_SCK → THVD1452 D → Y/Z (диф. пара) → энкодер MA+/MA-
  *   RX: энкодер SLO+/SLO- → THVD1452 A/B → R → STM32 SPI_MISO
  *
@@ -206,7 +206,7 @@ BiSS_Status BiSS_Read(BiSS_Reading *out)
 #undef RX_BIT
 
     /* --- Шаг 4: Разбираем поля SCD --- */
-    uint32_t raw_pos = (scd >> 8) & 0x00FFFFFF; /* Биты [31:8] — 24-бит позиция */
+    uint32_t raw_pos = (scd >> 8) & 0x00FFFFFF; /* Биты [31:8] — 24-битная позиция */
     uint8_t  err_bit = (scd >> 7) & 1;          /* Бит [7] — Error */
     uint8_t  wrn_bit = (scd >> 6) & 1;          /* Бит [6] — Warning */
     uint8_t  crc_rx  = scd & 0x3F;              /* Биты [5:0] — CRC6 от энкодера */
