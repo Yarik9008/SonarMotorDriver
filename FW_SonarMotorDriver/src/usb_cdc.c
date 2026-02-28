@@ -26,6 +26,12 @@ USBD_HandleTypeDef hUsbDeviceFS;
 /** Буфер приёма данных от хоста (64 байта — максимальный размер USB FS пакета) */
 static uint8_t cdc_rx_buf[CDC_DATA_FS_MAX_PACKET_SIZE];
 
+/** Кольцевой буфер приёма команд (для парсера в main loop) */
+#define USB_RX_RING_SIZE  256U
+static uint8_t  rx_ring[USB_RX_RING_SIZE];
+static volatile uint16_t rx_head = 0;
+static uint16_t rx_tail = 0;
+
 /** Текущие настройки COM-порта (запрашиваются/устанавливаются хостом).
  *  Для USB CDC реальная скорость не зависит от bitrate — передача идёт
  *  на скорости USB Full Speed (12 Мбит/с), но хост может запрашивать эти параметры. */
@@ -106,11 +112,20 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t *pbuf, uint16_t length)
 /**
  * @brief Вызывается при получении данных от хоста.
  * Распознаёт команду "DFU" — перезагрузка в DFU-загрузчик.
+ * Копирует данные в кольцевой буфер для парсера команд.
  */
 static int8_t CDC_Receive_FS(uint8_t *buf, uint32_t *len)
 {
     if (*len >= 3 && buf[0] == 'D' && buf[1] == 'F' && buf[2] == 'U')
         USB_CDC_RebootToDFU();
+
+    for (uint32_t i = 0; i < *len; i++) {
+        uint16_t next = (rx_head + 1) % USB_RX_RING_SIZE;
+        if (next != rx_tail) {
+            rx_ring[rx_head] = buf[i];
+            rx_head = next;
+        }
+    }
 
     USBD_CDC_SetRxBuffer(&hUsbDeviceFS, cdc_rx_buf);
     USBD_CDC_ReceivePacket(&hUsbDeviceFS);
@@ -204,6 +219,30 @@ void USB_CDC_Task(void)
 uint8_t USB_CDC_IsConnected(void)
 {
     return hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED;
+}
+
+/**
+ * @brief Чтение строки из буфера приёма.
+ * Потребляет данные только при наличии полной строки (до \r или \n).
+ */
+uint16_t USB_CDC_ReadLine(char *buf, uint16_t size)
+{
+    if (size == 0)
+        return 0;
+
+    uint16_t len = 0;
+    uint16_t tail = rx_tail;
+    while (tail != rx_head && len < size - 1) {
+        uint8_t c = rx_ring[tail];
+        tail = (tail + 1) % USB_RX_RING_SIZE;
+        if (c == '\r' || c == '\n') {
+            rx_tail = tail;
+            buf[len] = '\0';
+            return len;
+        }
+        buf[len++] = (char)c;
+    }
+    return 0;
 }
 
 /**

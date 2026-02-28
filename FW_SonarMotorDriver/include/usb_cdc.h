@@ -44,4 +44,12 @@ uint8_t USB_CDC_IsConnected(void);
  */
 void USB_CDC_RebootToDFU(void);
 
+/**
+ * @brief Чтение строки из буфера приёма (до \r или \n).
+ * @param buf  Буфер для записи (с завершающим \0).
+ * @param size Размер буфера.
+ * @return Длина прочитанных символов (без \r\n), 0 если строка не готова.
+ */
+uint16_t USB_CDC_ReadLine(char *buf, uint16_t size);
+
 #endif

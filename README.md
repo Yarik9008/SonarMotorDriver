@@ -38,6 +38,4 @@ pio run --target upload
 - **PlatformIO** — для сборки прошивки
 - **Altium Designer** — для работы с PCB (файлы .PrjPcb, .SchDoc, .PcbDoc)
 
-## Лицензия
 
-Проект предоставляется как есть, без каких-либо гарантий.
