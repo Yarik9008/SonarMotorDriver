@@ -17,6 +17,7 @@
 
 #include "usbd_core.h"
 #include "usbd_cdc.h"
+#include "board.h"
 
 /** Хэндл PCD (Peripheral Controller Driver) — аппаратный уровень USB */
 PCD_HandleTypeDef hpcd_USB_FS;
@@ -56,7 +57,7 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef *hpcd)
         HAL_GPIO_Init(GPIOA, &gpio);
 
         /* Прерывание USB LP — обрабатывает все USB-события */
-        HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
+        HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, IRQ_PRIO_USB, 0);
         HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
     }
 }
