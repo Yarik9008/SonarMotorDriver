@@ -12,6 +12,7 @@
 #define HAL_SPI_MODULE_ENABLED
 #define HAL_PCD_MODULE_ENABLED
 #define HAL_TIM_MODULE_ENABLED
+#define HAL_IWDG_MODULE_ENABLED
 #define HAL_UART_MODULE_ENABLED
 
 /* -------- Параметры генераторов -------- */
@@ -73,6 +74,9 @@
 #ifdef HAL_PCD_MODULE_ENABLED
  #include "stm32f1xx_hal_pcd.h"
  #include "stm32f1xx_hal_pcd_ex.h"
+#endif
+#ifdef HAL_IWDG_MODULE_ENABLED
+ #include "stm32f1xx_hal_iwdg.h"
 #endif
 #ifdef HAL_UART_MODULE_ENABLED
  #include "stm32f1xx_hal_uart.h"

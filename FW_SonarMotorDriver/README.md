@@ -38,9 +38,10 @@
 
  ┌──────┐  USB CDC  ┌──────────┐
  │  ПК  │◄─────────►│   Cmd    ├──► en / dis / t= / kp= / ki= / kd= / op=
- └──────┘           │  Parser  │
-                    └──────────┘
- ПК ◄── Телеметрия: cp, tp, pe, m, ec (USB TX)
+ │      │  UART1    │  Parser  │
+ │      │◄─────────►│          │
+ └──────┘ PA9/PA10  └──────────┘
+ ПК ◄── Телеметрия: cp, tp, pe, m, ec (USB TX + UART TX)
 ```
 
 ### Режимы управления
@@ -64,7 +65,7 @@
 3. **Encoder_Accumulate** — многооборотная позиция с обработкой перехлёста.
 4. **Mode_Update** — счётчик сбоев: ≥500 мс без ответа → ol; при ответе → cl.
 5. **MotorControl_Tick** — CL: PID → шаги; OL: прямое позиционирование.
-6. **Telemetry_Tick** — периодический вывод cp/tp/pe/m/ec через USB CDC.
+6. **Telemetry_Tick** — периодический вывод cp/tp/pe/m/ec через USB CDC и UART.
 7. **Heartbeat_Tick** — мигание LED ~1 Гц.
 
 ### Приоритеты прерываний
@@ -74,6 +75,7 @@
 | --------- | ------------ | -------------------------- |
 | 4         | DMA1_Ch2/Ch3 | SPI1 RX/TX для BiSS C      |
 | 5         | USB LP       | Обработка USB-пакетов      |
+| 6         | USART1       | UART TX/RX (команды, тел.) |
 | 15        | SysTick      | HAL_Delay(), HAL_GetTick() |
 
 
@@ -88,6 +90,8 @@
 | ----- | ------------- | ------------------------------------- |
 | PA5   | SPI1_SCK      | MA → THVD1452 D                       |
 | PA6   | SPI1_MISO     | SLO ← THVD1452 R                      |
+| PA9   | USART1_TX     | UART TX (дублирование USB CDC)        |
+| PA10  | USART1_RX     | UART RX (дублирование USB CDC)        |
 | PA11  | USB_DM        | USB Data Minus                        |
 | PA12  | USB_DP        | USB Data Plus                         |
 | PB0   | GPIO_OUT (DE) | Driver Enable THVD1452 (active HIGH)  |
@@ -116,6 +120,8 @@
     │   ├── PB7 ──►│ DIR      ├──── Шаговый двигатель
     │   └── PB6 ──►│ ENN      │
     │              └──────────┘
+    ├── PA9  ──►  UART TX ──► ПК / внешний MCU (115200 8N1)
+    ├── PA10 ◄──  UART RX ◄── ПК / внешний MCU
     ├── PA11 ──┐
     └── PA12 ──┼── USB → ПК (COM-порт)
 ```
@@ -185,13 +191,15 @@ FW_SonarMotorDriver/
 │   ├── usbd_desc.h          — USB дескрипторы
 │   ├── stepper.h            — STEP/DIR/ENABLE
 │   ├── pid.h                — PID-регулятор
+│   ├── uart.h               — UART (USART1) API
 │   └── cmd_parser.h         — парсер команд en/dis/t/kp/ki/kd/op
 ├── src/
 │   ├── main.c               — init, главный цикл, контроллер, телеметрия
 │   ├── biss_c.c             — BiSS C: SPI + DMA, CRC6, разбор кадра
 │   ├── stepper.c            — TIM4 PWM генерация импульсов STEP
 │   ├── pid.c                — PID с anti-windup
-│   ├── cmd_parser.c         — парсер USB-команд
+│   ├── cmd_parser.c         — парсер команд (USB + UART)
+│   ├── uart.c               — UART (USART1): кольцевые буферы, TX/RX по прерываниям
 │   ├── usb_cdc.c            — USB CDC, кольцевые буферы, readline
 │   ├── usbd_conf.c          — низкоуровневая привязка USB к STM32
 │   └── usbd_desc.c          — USB дескрипторы устройства
@@ -208,6 +216,7 @@ FW_SonarMotorDriver/
 | `stepper`    | TIM4 PWM: STEP/DIR/ENABLE для TMC2208                   |
 | `pid`        | PID с anti-windup и ограничением выхода                 |
 | `cmd_parser` | Парсер команд (en, dis, t=, kp=, ki=, kd=, op=)         |
+| `uart`       | UART (USART1): кольцевые буферы TX/RX, readline         |
 | `usb_cdc`    | USB CDC: кольцевые буферы TX/RX, readline, DFU reboot   |
 
 
@@ -232,6 +241,9 @@ pio run --target upload   # Прошивка
 2. TMC2208: STEP→PB8, DIR→PB7, ENN→PB6.
 3. Питание энкодера 5–12 В, питание драйвера.
 4. USB → ПК, открыть COM-порт.
+5. *(Опционально)* UART: PA9 (TX) / PA10 (RX) → USB-UART адаптер или MCU (115200 8N1).
+
+Команды и телеметрия дублируются на оба интерфейса (USB CDC и UART).
 
 ### Телеметрия
 
@@ -265,7 +277,7 @@ cp:90.12,tp:180.00,pe:89.88,m:ol,ec:2
 | 5   | BiSS SPI     | Ошибка обмена SPI (HAL_SPI_TransmitReceive != HAL_OK). SPI не инициализирован, MISO не подключён, конфликт пинов.                             |
 
 
-### Команды USB
+### Команды (USB CDC + UART)
 
 
 | Команда   | Действие                       | Ответ          |
@@ -363,6 +375,15 @@ Stepper_Stop();          // Остановить PWM
 ```c
 float deg = PID_Update(&pid, error, dt);
 PID_Reset(&pid);
+```
+
+### UART
+
+```c
+UART_Init();
+UART_Transmit((uint8_t *)"hello\r\n", 7);
+UART_Task();                               // Вызывать в main loop
+uint16_t len = UART_ReadLine(buf, 64);     // Чтение строки из RX буфера
 ```
 
 ### USB CDC

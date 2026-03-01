@@ -7,6 +7,7 @@
 #include "stepper.h"
 #include "pid.h"
 #include "cmd_parser.h"
+#include "uart.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -54,6 +55,7 @@ static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi)
 /* --- Периферия --- */
 
 static TIM_HandleTypeDef htim_poll;
+static IWDG_HandleTypeDef hiwdg;
 
 /* --- Состояние --- */
 
@@ -104,6 +106,7 @@ int main(void)
     BSP_Init();
 
     USB_CDC_Init();
+    UART_Init();
     HAL_Delay(USB_ENUM_DELAY_MS);
 
     BiSS_Config enc_cfg = {
@@ -122,6 +125,11 @@ int main(void)
     PollTimer_Init();
     HAL_TIM_Base_Start(&htim_poll);
 
+    hiwdg.Instance       = IWDG;
+    hiwdg.Init.Prescaler = IWDG_PRESCALER;
+    hiwdg.Init.Reload    = IWDG_RELOAD;
+    HAL_IWDG_Init(&hiwdg);
+
     /* Первое блокирующее чтение для инициализации позиции */
     BiSS_Reading rd;
     BiSS_Status  st = BiSS_Read(&rd);
@@ -135,6 +143,7 @@ int main(void)
 
     while (1) {
         USB_CDC_Task();
+        UART_Task();
         PollCommands();
 
         /* Ожидание тика 1 кГц */
@@ -162,6 +171,8 @@ int main(void)
         MotorControl_Tick(enc_ok);
         Telemetry_Tick(enc_ok, st);
         Heartbeat_Tick();
+
+        HAL_IWDG_Refresh(&hiwdg);
     }
 }
 
@@ -263,11 +274,18 @@ static void MotorControl_Tick(uint8_t enc_ok)
 
 /* --- Телеметрия и heartbeat --- */
 
+static void TransmitAll(const uint8_t *buf, uint16_t len)
+{
+    if (USB_CDC_IsConnected())
+        USB_CDC_Transmit(buf, len);
+    UART_Transmit(buf, len);
+}
+
 static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 {
     static uint16_t cnt = 0;
 
-    if (g_output_period_ms == 0 || !USB_CDC_IsConnected())
+    if (g_output_period_ms == 0)
         return;
 
     if (++cnt < g_output_period_ms)
@@ -288,7 +306,7 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
         (unsigned)ec);
 
     if (len > 0)
-        USB_CDC_Transmit((uint8_t *)buf, (uint16_t)len);
+        TransmitAll((uint8_t *)buf, (uint16_t)len);
 }
 
 static void Heartbeat_Tick(void)
@@ -305,8 +323,14 @@ static void Heartbeat_Tick(void)
 static void PollCommands(void)
 {
     char line[64];
+    Cmd_Result cmd;
+
     if (USB_CDC_ReadLine(line, sizeof(line)) > 0) {
-        Cmd_Result cmd;
+        if (Cmd_Parse(line, &cmd))
+            ProcessCommand(&cmd);
+    }
+
+    if (UART_ReadLine(line, sizeof(line)) > 0) {
         if (Cmd_Parse(line, &cmd))
             ProcessCommand(&cmd);
     }
@@ -319,8 +343,8 @@ static void SendResponse(const char *fmt, ...)
     va_start(args, fmt);
     int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    if (len > 0 && USB_CDC_IsConnected())
-        USB_CDC_Transmit((uint8_t *)buf, (uint16_t)len);
+    if (len > 0)
+        TransmitAll((uint8_t *)buf, (uint16_t)len);
 }
 
 static void ProcessCommand(const Cmd_Result *cmd)
