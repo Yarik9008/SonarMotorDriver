@@ -52,6 +52,15 @@ static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi) /* Ограни�
     return v;
 }
 
+/* Нормализация ошибки в (-180, 180] — кратчайший путь к цели */
+static inline float shortest_path_err(float target, float pos)
+{
+    float err = target - pos;
+    while (err > 180.0f)  err -= 360.0f;
+    while (err <= -180.0f) err += 360.0f;
+    return err;
+}
+
 /* --- Периферия --- */
 
 static TIM_HandleTypeDef htim_poll; /* Таймер 1 кГц */
@@ -75,15 +84,19 @@ static PID_State g_pid = { /* PID регулятор */
 static float    g_target_deg       = 0.0f; /* Целевая позиция, градусы */
 static uint8_t  g_enabled          = 0;
 static uint16_t g_output_period_ms = OUTPUT_PERIOD_MS_DEFAULT; /* Период вывода телеметрии, мс */
+static uint8_t  g_telemetry_debug = TELEMETRY_DEBUG_DEFAULT;  /* 0 = cp,ec; 1 = полная */
 
 static uint32_t g_enc_raw_prev     = 0xFFFFFFFF; /* Предыдущее значение энкодера */
 static int64_t  g_enc_counts       = 0; /* Сумма энкодера */
 
 static float    g_cl_deg_accum     = 0.0f; /* Сумма интеграла PID */
+static float    g_last_ctrl_deg    = 0.0f; /* Последнее управляющее воздействие, град */
 
 static CtrlMode g_mode             = MODE_CLOSED_LOOP;
 static uint32_t g_enc_fail_cnt     = 0;
 static float    g_ol_pos_deg       = 0.0f; /* Позиция в open-loop, градусы */
+static uint8_t  g_was_outside_db   = 0;    /* Флаг: были за пределами deadband (для snap) */
+static uint8_t  g_homing           = 0;    /* 1 = хоминг к начальной позиции (при старте) */
 
 
 /* --- Вспомогательные --- */
@@ -183,8 +196,11 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
     if (g_enc_raw_prev == 0xFFFFFFFF) {
         g_enc_counts   = (int64_t)rd->position;
         g_enc_raw_prev = rd->position;
-        g_target_deg   = 0.0f;
-        g_ol_pos_deg   = COUNTS_TO_DEG(g_enc_counts);
+        float pos_deg  = COUNTS_TO_DEG(g_enc_counts);
+        float err      = shortest_path_err(STARTUP_TARGET_OFFSET_DEG, pos_deg);
+        g_target_deg   = pos_deg + err;   /* Цель в многооборотных координатах = кратчайший путь */
+        g_ol_pos_deg   = pos_deg;
+        g_homing       = 1;
         g_enabled      = 1;
         Stepper_SetEnable(1);
         return;
@@ -228,14 +244,18 @@ static void MotorControl_Tick(uint8_t enc_ok)
 {
     if (!g_enabled) {
         Stepper_Stop();
+        g_last_ctrl_deg = 0.0f;
         return;
     }
+
+    g_last_ctrl_deg = 0.0f;
 
     if (g_mode == MODE_CLOSED_LOOP && enc_ok) {
         float pos_deg = COUNTS_TO_DEG(g_enc_counts);
         float err_deg = g_target_deg - pos_deg;
 
         if (err_deg > PID_DEADBAND_DEG || err_deg < -PID_DEADBAND_DEG) {
+            g_was_outside_db = 1;
             float pid_out = PID_Update(&g_pid, err_deg, DT_S);
             g_cl_deg_accum = clampf(g_cl_deg_accum + pid_out,
                                     -MAX_DEG_PER_TICK, MAX_DEG_PER_TICK);
@@ -246,8 +266,29 @@ static void MotorControl_Tick(uint8_t enc_ok)
             if (steps != 0) {
                 DoSteps(steps);
                 g_cl_deg_accum -= (float)steps * DEG_PER_STEP;
+                g_last_ctrl_deg = (float)steps * DEG_PER_STEP;
+            } else {
+                g_last_ctrl_deg = pid_out;
             }
         } else {
+            if (g_was_outside_db) {
+                if (err_deg > 0.02f || err_deg < -0.02f) {
+                    int32_t snap = (err_deg > 0.0f) ? 1 : -1;
+                    DoSteps(snap);
+                    g_last_ctrl_deg = (float)snap * DEG_PER_STEP;
+                }
+                g_was_outside_db = 0;
+            }
+            if (g_homing) {
+                g_homing = 0;
+                g_enc_counts = (int64_t)g_enc_raw_prev;
+                g_target_deg = STARTUP_TARGET_OFFSET_DEG;
+                float pos = COUNTS_TO_DEG(g_enc_counts);
+                if (pos - g_target_deg > 180.0f)
+                    g_enc_counts -= (int64_t)ENCODER_COUNTS_REV;
+                else if (pos - g_target_deg < -180.0f)
+                    g_enc_counts += (int64_t)ENCODER_COUNTS_REV;
+            }
             Stepper_Stop();
             PID_Reset(&g_pid);
             g_cl_deg_accum = 0.0f;
@@ -265,8 +306,20 @@ static void MotorControl_Tick(uint8_t enc_ok)
             if (steps != 0) {
                 DoSteps(steps);
                 g_ol_pos_deg += (float)steps * DEG_PER_STEP;
+                g_last_ctrl_deg = (float)steps * DEG_PER_STEP;
+            } else {
+                g_last_ctrl_deg = err_deg;
             }
         } else {
+            if (g_homing) {
+                g_homing = 0;
+                float pos = COUNTS_TO_DEG(g_enc_raw_prev);
+                if (pos - STARTUP_TARGET_OFFSET_DEG > 180.0f)
+                    pos -= 360.0f;
+                else if (pos - STARTUP_TARGET_OFFSET_DEG < -180.0f)
+                    pos += 360.0f;
+                g_ol_pos_deg = pos;
+            }
             Stepper_Stop();
         }
     }
@@ -294,16 +347,26 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 
     char buf[128];
     float enc_deg = enc_ok ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
-    float err_deg = g_target_deg - enc_deg;
     uint8_t ec    = enc_ok ? ERR_OK : (uint8_t)st;
 
-    int len = snprintf(buf, sizeof(buf),
-        "cp:%.2f,tp:%.2f,pe:%.2f,m:%s,ec:%u\r\n",
-        (double)enc_deg,
-        (double)g_target_deg,
-        (double)err_deg,
-        (g_mode == MODE_CLOSED_LOOP) ? "cl" : "ol",
-        (unsigned)ec);
+    int len;
+    if (g_telemetry_debug) {
+        float err_deg = g_target_deg - enc_deg;
+        len = snprintf(buf, sizeof(buf),
+            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f\r\n",
+            (double)enc_deg,
+            (double)g_target_deg,
+            (double)err_deg,
+            (double)g_last_ctrl_deg,
+            (g_mode == MODE_CLOSED_LOOP) ? "cl" : "ol",
+            (unsigned)ec,
+            (double)g_pid.kp,
+            (double)g_pid.ki,
+            (double)g_pid.kd);
+    } else {
+        len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u\r\n",
+            (double)enc_deg, (unsigned)ec);
+    }
 
     if (len > 0)
         TransmitAll((uint8_t *)buf, (uint16_t)len);
@@ -358,6 +421,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_cl_deg_accum = 0.0f;
         g_target_deg = (g_mode == MODE_CLOSED_LOOP)
                         ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
+        g_homing = 0;
         SendResponse("ok:en\r\n");
         break;
 
@@ -370,6 +434,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
 
     case CMD_SET_TARGET:
         g_target_deg = cmd->target;
+        g_homing = 0;
         PID_Reset(&g_pid);
         g_cl_deg_accum = 0.0f;
         SendResponse("ok:t=%.2f\r\n", (double)g_target_deg);
@@ -393,6 +458,11 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_SET_OUTPUT_PERIOD:
         g_output_period_ms = cmd->output_period_ms;
         SendResponse("ok:op=%u\r\n", (unsigned)g_output_period_ms);
+        break;
+
+    case CMD_SET_DEBUG:
+        g_telemetry_debug = cmd->debug;
+        SendResponse("ok:debug=%u\r\n", (unsigned)g_telemetry_debug);
         break;
 
     case CMD_UNKNOWN:

@@ -37,7 +37,7 @@
 #define TMC2208_MICROSTEPS      32U     /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
 #define MOTOR_STEPS_PER_REV     (MOTOR_FULL_STEPS_REV * TMC2208_MICROSTEPS)
 #define MOTOR_DIR_INVERT        1       /* 1 = инвертировать направление */
-#define MAX_SPEED_DEG_S         1000U   /* Максимальная скорость, град/с */
+#define MAX_SPEED_DEG_S         1200U   /* Максимальная скорость, град/с */
 #define MAX_STEPS_PER_POLL      ((MAX_SPEED_DEG_S * MOTOR_STEPS_PER_REV + 360U * POLL_FREQ_HZ - 1U) / (360U * POLL_FREQ_HZ))
 #define STEP_PORT               GPIOB
 #define STEP_PIN                GPIO_PIN_8
@@ -47,11 +47,14 @@
 #define ENABLE_PORT             GPIOB
 #define ENABLE_PIN              GPIO_PIN_6  /* ENN: LOW = включён, HIGH = выключен */
 
+/* -------- Старт — целевая позиция при первом чтении энкодера -------- */
+#define STARTUP_TARGET_OFFSET_DEG 0.0f  /* Офсет от 0° (0 = идти в 0 по энкодеру) */
+
 /* -------- PID — регулятор -------- */
-#define PID_KP_DEFAULT          0.01f
+#define PID_KP_DEFAULT          0.025f
 #define PID_KI_DEFAULT          0.0f
 #define PID_KD_DEFAULT          0.0f
-#define PID_DEADBAND_DEG        0.05f
+#define PID_DEADBAND_DEG        0.1f   /* >= ENCODER_ACCURACY_DEG, иначе дребезг */
 
 /* -------- USART1 — UART (PA9 TX / PA10 RX, DMA) -------- */
 #define UART_INSTANCE           USART1
@@ -79,7 +82,13 @@
 #define IRQ_PRIO_STEP           7U
 
 /* -------- Телеметрия -------- */
-#define OUTPUT_PERIOD_MS_DEFAULT 5U     /* Период (мс), 0 = отключить; 5 мс = 200 Гц */
+#define OUTPUT_PERIOD_MS_DEFAULT 4U    /* Период (мс), 0 = отключить; 4 мс = 250 Гц */
+#define TELEMETRY_DEBUG_DEFAULT 0       /* 0 = cp,ec; 1 = полная телеметрия */
+
+/* Состав телеметрии:
+ * debug=0 (обычная): cp(float), ec(uint8_t)
+ * debug=1 (полная):  cp(float), tp(float), pe(float), u(float), m("cl"|"ol"), ec(uint8_t), kp(float), ki(float), kd(float) 
+ * */
 
 /* -------- Коды ошибок телеметрии -------- */
 typedef enum {

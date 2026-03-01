@@ -7,6 +7,7 @@
  *   t=X          — целевая позиция (градусы)
  *   kp=X, ki=X, kd=X — коэффициенты PID
  *   op=N         — период телеметрии (мс), 0 = выкл
+ *   debug=0|1    — режим телеметрии: 0 = cp,ec; 1 = полная
  *   DFU          — перезагрузка (обрабатывается в usb_cdc.c)
  */
 
@@ -24,6 +25,7 @@ typedef enum {
     CMD_SET_KI,
     CMD_SET_KD,
     CMD_SET_OUTPUT_PERIOD,
+    CMD_SET_DEBUG,
     CMD_UNKNOWN
 } Cmd_Type;
 
@@ -32,6 +34,7 @@ typedef struct {
     float kp, ki, kd;
     float target;
     uint16_t output_period_ms;
+    uint8_t debug;
 } Cmd_Result;
 
 uint8_t Cmd_Parse(const char *line, Cmd_Result *out);

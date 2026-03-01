@@ -35,6 +35,7 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     out->kp = out->ki = out->kd = 0.0f;
     out->target = 0.0f;
     out->output_period_ms = 0;
+    out->debug = 0;
 
     if (strcmp(line, "en") == 0) {
         out->type = CMD_ENABLE;
@@ -89,6 +90,17 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
             return 0;
         out->type = CMD_SET_OUTPUT_PERIOD;
         out->output_period_ms = (uint16_t)v;
+        return 1;
+    }
+
+    /* debug=0|1 — режим телеметрии */
+    if (strncmp(line, "debug=", 6) == 0) {
+        const char *p = line + 6;
+        int32_t v;
+        if (parse_int(&p, &v) != 0 || (v != 0 && v != 1))
+            return 0;
+        out->type = CMD_SET_DEBUG;
+        out->debug = (uint8_t)v;
         return 1;
     }
 
