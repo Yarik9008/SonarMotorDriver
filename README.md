@@ -7,7 +7,7 @@
 | Каталог | Описание |
 |---------|----------|
 | **FW_SonarMotorDriver/** | Прошивка STM32F103C8: PID-управление по энкодеру, TMC2208, USB CDC |
-| **PCB_SonarMotorDriver/** | Проект PCB (Altium) — схема и разводка |
+| **PCB_SonarMotorDriver/**| Проект PCB (Altium) — схема и разводка |
 
 ## Возможности
 
