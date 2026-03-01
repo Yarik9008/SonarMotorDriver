@@ -1,51 +1,51 @@
 /* main.c — Позиционное управление шаговым двигателем (PID + BiSS-C энкодер). */
 
-#include "stm32f1xx_hal.h"
+#include "stm32f1xx_hal.h" /* HAL */
 #include "board.h"
-#include "biss_c.h"
-#include "usb_cdc.h"
-#include "stepper.h"
-#include "pid.h"
-#include "cmd_parser.h"
-#include "uart.h"
-#include <stdio.h>
-#include <string.h>
-#include <stdarg.h>
+#include "biss_c.h" /* BiSS C энкодер */
+#include "usb_cdc.h" /* USB CDC */
+#include "stepper.h" /* Шаговый двигатель */
+#include "pid.h" /* PID регулятор */
+#include "cmd_parser.h" /* Парсер команд */
+#include "uart.h" /* UART */
+#include <stdio.h> /* printf */
+#include <string.h> /* strlen */    
+#include <stdarg.h> /* va_list */
 
 /* --- Прототипы --- */
 
 static void SystemClock_Config(void);
-static void BSP_Init(void);
-static void PollTimer_Init(void);
-static void ProcessCommand(const Cmd_Result *cmd);
-static void SendResponse(const char *fmt, ...);
-static void PollCommands(void);
-static void Encoder_Accumulate(const BiSS_Reading *rd);
-static void Mode_Update(uint8_t enc_ok);
-static void MotorControl_Tick(uint8_t enc_ok);
-static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st);
-static void Heartbeat_Tick(void);
+static void BSP_Init(void); /* Инициализация светодиода */
+static void PollTimer_Init(void); /* Инициализация таймера 1 кГц */
+static void ProcessCommand(const Cmd_Result *cmd); /* Обработка команд */
+static void SendResponse(const char *fmt, ...); /* Отправка ответа */
+static void PollCommands(void); /* Обработка команд */
+static void Encoder_Accumulate(const BiSS_Reading *rd); /* Суммирование энкодера */
+static void Mode_Update(uint8_t enc_ok); /* Автопереключение CL ↔ OL */
+static void MotorControl_Tick(uint8_t enc_ok); /* Управление мотором */
+static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st); /* Телеметрия */
+static void Heartbeat_Tick(void); /* Heartbeat */
 
 /* --- Единицы: всё в градусах --- */
 
 #define DEG_PER_STEP        (360.0f / (float)MOTOR_STEPS_PER_REV)
-#define MAX_DEG_PER_TICK    ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ)
-#define DT_S                (1.0f / (float)POLL_FREQ_HZ)
-#define COUNTS_TO_DEG(c)    ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV)
+#define MAX_DEG_PER_TICK    ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ) /* Максимальная скорость, град/с */  
+#define DT_S                (1.0f / (float)POLL_FREQ_HZ) /* Интервал времени, с */
+#define COUNTS_TO_DEG(c)    ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV) /* Конвертация счетчиков в градусы */
 
-static inline int32_t DegToSteps(float deg)
+static inline int32_t DegToSteps(float deg) /* Конвертация градусов в шаги */
 {
     return (int32_t)(deg / DEG_PER_STEP);
 }
 
-static inline float clampf(float v, float lo, float hi)
+static inline float clampf(float v, float lo, float hi) /* Ограничение значения */
 {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
 }
 
-static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi)
+static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi) /* Ограничение значения */  
 {
     if (v < lo) return lo;
     if (v > hi) return hi;
@@ -54,14 +54,14 @@ static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi)
 
 /* --- Периферия --- */
 
-static TIM_HandleTypeDef htim_poll;
-static IWDG_HandleTypeDef hiwdg;
+static TIM_HandleTypeDef htim_poll; /* Таймер 1 кГц */
+static IWDG_HandleTypeDef hiwdg; /* Сторожевой таймер */
 
 /* --- Состояние --- */
 
-typedef enum { MODE_CLOSED_LOOP = 0, MODE_OPEN_LOOP = 1 } CtrlMode;
+typedef enum { MODE_CLOSED_LOOP = 0, MODE_OPEN_LOOP = 1 } CtrlMode; /* Режим управления */
 
-static PID_State g_pid = {
+static PID_State g_pid = { /* PID регулятор */
     .kp = PID_KP_DEFAULT, 
     .ki = PID_KI_DEFAULT, 
     .kd = PID_KD_DEFAULT,
@@ -72,28 +72,28 @@ static PID_State g_pid = {
     .initialized = 0
 };
 
-static float    g_target_deg       = 0.0f;
+static float    g_target_deg       = 0.0f; /* Целевая позиция, градусы */
 static uint8_t  g_enabled          = 0;
-static uint16_t g_output_period_ms = OUTPUT_PERIOD_MS_DEFAULT;
+static uint16_t g_output_period_ms = OUTPUT_PERIOD_MS_DEFAULT; /* Период вывода телеметрии, мс */
 
-static uint32_t g_enc_raw_prev     = 0xFFFFFFFF;
-static int64_t  g_enc_counts       = 0;
+static uint32_t g_enc_raw_prev     = 0xFFFFFFFF; /* Предыдущее значение энкодера */
+static int64_t  g_enc_counts       = 0; /* Сумма энкодера */
 
-static float    g_cl_deg_accum     = 0.0f;
+static float    g_cl_deg_accum     = 0.0f; /* Сумма интеграла PID */
 
 static CtrlMode g_mode             = MODE_CLOSED_LOOP;
 static uint32_t g_enc_fail_cnt     = 0;
-static float    g_ol_pos_deg       = 0.0f;
+static float    g_ol_pos_deg       = 0.0f; /* Позиция в open-loop, градусы */
 
 
 /* --- Вспомогательные --- */
 
-static void DoSteps(int32_t steps)
+static void DoSteps(int32_t steps) /* Выполнение шагов */
 {
-#if MOTOR_DIR_INVERT
+#if MOTOR_DIR_INVERT /* Инвертированное направление */
     Stepper_Steps(-steps);
 #else
-    Stepper_Steps(steps);
+    Stepper_Steps(steps); /* Прямое направление */
 #endif
 }
 
@@ -102,14 +102,14 @@ static void DoSteps(int32_t steps)
 int main(void)
 {
     HAL_Init();
-    SystemClock_Config();
+    SystemClock_Config(); /* Инициализация системного таймера */    
     BSP_Init();
 
-    USB_CDC_Init();
-    UART_Init();
-    HAL_Delay(USB_ENUM_DELAY_MS);
+    USB_CDC_Init(); /* Инициализация USB CDC */
+    UART_Init(); /* Инициализация UART */
+    HAL_Delay(USB_ENUM_DELAY_MS); /* Задержка для инициализации USB */
 
-    BiSS_Config enc_cfg = {
+    BiSS_Config enc_cfg = { /* Конфигурация энкодера */
         .spi_instance    = SPI1,
         .resolution_bits = ENCODER_RESOLUTION_BITS,
         .de_port         = XCVR_DE_PORT,
@@ -117,13 +117,13 @@ int main(void)
         .re_port         = XCVR_RE_PORT,
         .re_pin          = XCVR_RE_PIN,
     };
-    BiSS_Init(&enc_cfg);
-    HAL_Delay(ENCODER_STARTUP_MS);
+    BiSS_Init(&enc_cfg); /* Инициализация энкодера */
+    HAL_Delay(ENCODER_STARTUP_MS); /* Задержка для инициализации энкодера */
 
-    Stepper_Init();
+    Stepper_Init(); /* Инициализация шагового двигателя */
 
-    PollTimer_Init();
-    HAL_TIM_Base_Start(&htim_poll);
+    PollTimer_Init(); /* Инициализация таймера 1 кГц */
+    HAL_TIM_Base_Start(&htim_poll); /* Запуск таймера 1 кГц */
 
     hiwdg.Instance       = IWDG;
     hiwdg.Init.Prescaler = IWDG_PRESCALER;
