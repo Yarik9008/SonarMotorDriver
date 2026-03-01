@@ -1,7 +1,7 @@
 #ifndef STM32F1XX_HAL_CONF_H
 #define STM32F1XX_HAL_CONF_H
 
-/* -------- Module selection -------- */
+/* -------- Выбор модулей -------- */
 #define HAL_MODULE_ENABLED
 #define HAL_GPIO_MODULE_ENABLED
 #define HAL_RCC_MODULE_ENABLED
@@ -14,7 +14,7 @@
 #define HAL_TIM_MODULE_ENABLED
 #define HAL_UART_MODULE_ENABLED
 
-/* -------- Oscillator values -------- */
+/* -------- Параметры генераторов -------- */
 #if !defined(HSE_VALUE)
 #define HSE_VALUE            8000000U
 #endif
@@ -39,13 +39,13 @@
 #define LSI_VALUE            40000U
 #endif
 
-/* -------- System -------- */
+/* -------- Системные параметры -------- */
 #define VDD_VALUE                    3300U
 #define TICK_INT_PRIORITY            15U
 #define USE_RTOS                     0U
 #define PREFETCH_ENABLE              1U
 
-/* -------- HAL includes -------- */
+/* -------- Подключение модулей HAL -------- */
 #ifdef HAL_RCC_MODULE_ENABLED
  #include "stm32f1xx_hal_rcc.h"
 #endif
@@ -78,7 +78,7 @@
  #include "stm32f1xx_hal_uart.h"
 #endif
 
-/* -------- Assert -------- */
+/* -------- Проверки (Assert) -------- */
 /* #define USE_FULL_ASSERT 1U */
 #ifdef USE_FULL_ASSERT
  #define assert_param(expr) ((expr) ? (void)0U : assert_failed((uint8_t *)__FILE__, __LINE__))

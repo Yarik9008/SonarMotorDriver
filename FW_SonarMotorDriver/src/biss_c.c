@@ -1,21 +1,10 @@
-/**
- * @file biss_c.c
- * @brief Реализация драйвера BiSS C для энкодеров LENZ IRS (SPI + DMA).
- *
- * Связь с энкодером организована через RS-422 трансивер THVD1452:
- *   TX: STM32 SPI1_SCK → THVD1452 D → Y/Z (диф. пара) → энкодер MA+/MA-
- *   RX: энкодер SLO+/SLO- → THVD1452 A/B → R → STM32 SPI1_MISO
- *
- * SPI работает как генератор тактового сигнала MA и приёмник данных SLO.
- * DMA1_Channel2 (SPI1_RX) и DMA1_Channel3 (SPI1_TX) обеспечивают
- * неблокирующий обмен: CPU свободен ~64 мкс на каждом чтении.
- */
+/* biss_c.c — Драйвер BiSS C для энкодеров LENZ IRS (SPI + DMA + THVD1452). */
 
 #include "biss_c.h"
 #include "board.h"
 #include <string.h>
 
-/* ======== Состояние драйвера ============================================= */
+/* --- Состояние драйвера --- */
 
 static SPI_HandleTypeDef hspi_biss;
 static DMA_HandleTypeDef hdma_spi_rx;
@@ -32,7 +21,7 @@ static uint8_t g_tx_buf[BISS_FRAME_BYTES];
 static uint8_t g_rx_buf[BISS_FRAME_BYTES];
 static volatile uint8_t g_dma_done = 0;
 
-/* ======== CRC ============================================================ */
+/* --- CRC --- */
 
 static uint8_t biss_crc6(uint32_t data, uint8_t nbits)
 {
@@ -46,14 +35,14 @@ static uint8_t biss_crc6(uint32_t data, uint8_t nbits)
     return crc ^ 0x3F;
 }
 
-/* ======== Извлечение бита из буфера ====================================== */
+/* --- Извлечение бита из буфера --- */
 
 static inline uint8_t rx_bit(const uint8_t *buf, int pos)
 {
     return (buf[pos >> 3] >> (7 - (pos & 7))) & 1;
 }
 
-/* ======== Разбор кадра (общий для блокирующего и DMA режимов) ============ */
+/* --- Разбор кадра --- */
 
 static BiSS_Status biss_parse_frame(const uint8_t *rx, BiSS_Reading *out)
 {
@@ -117,7 +106,7 @@ static BiSS_Status biss_parse_frame(const uint8_t *rx, BiSS_Reading *out)
     return BISS_OK;
 }
 
-/* ======== DMA колбэк ===================================================== */
+/* --- DMA колбэк --- */
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
@@ -125,7 +114,7 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
         g_dma_done = 1;
 }
 
-/* ======== DMA IRQ handlers =============================================== */
+/* --- DMA IRQ --- */
 
 void DMA1_Channel2_IRQHandler(void)
 {
@@ -137,7 +126,7 @@ void DMA1_Channel3_IRQHandler(void)
     HAL_DMA_IRQHandler(&hdma_spi_tx);
 }
 
-/* ======== Инициализация ================================================== */
+/* --- Инициализация --- */
 
 BiSS_Status BiSS_Init(const BiSS_Config *cfg)
 {
@@ -229,7 +218,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi)
     }
 }
 
-/* ======== Блокирующее чтение (для инициализации) ========================= */
+/* --- Блокирующее чтение --- */
 
 BiSS_Status BiSS_Read(BiSS_Reading *out)
 {
@@ -248,7 +237,7 @@ BiSS_Status BiSS_Read(BiSS_Reading *out)
     return biss_parse_frame(rx, out);
 }
 
-/* ======== Неблокирующее чтение через DMA ================================= */
+/* --- Неблокирующее чтение (DMA) --- */
 
 void BiSS_StartRead(void)
 {
@@ -267,20 +256,3 @@ BiSS_Status BiSS_GetResult(BiSS_Reading *out)
     return biss_parse_frame(g_rx_buf, out);
 }
 
-/* ======== Утилиты ======================================================== */
-
-const char *BiSS_StatusStr(BiSS_Status st)
-{
-    static const char *names[] = {
-        [BISS_OK]              = "OK",
-        [BISS_ERR_CRC]         = "CRC",
-        [BISS_ERR_NO_RESPONSE] = "NO_RESP",
-        [BISS_ERR_SENSOR]      = "SENSOR",
-        [BISS_ERR_WARNING]     = "WARN",
-        [BISS_ERR_SPI]         = "SPI",
-    };
-
-    if (st < BISS_STATUS_COUNT)
-        return names[st];
-    return "?";
-}

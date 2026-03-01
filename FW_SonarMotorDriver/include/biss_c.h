@@ -1,11 +1,4 @@
-/**
- * @file biss_c.h
- * @brief Драйвер интерфейса BiSS C для абсолютных энкодеров LENZ IRS.
- *
- * Поддерживает два режима:
- *   BiSS_Read()       — блокирующий (для первого чтения при инициализации)
- *   BiSS_StartRead()  — неблокирующий (DMA), результат в BiSS_IsReady() + BiSS_GetResult()
- */
+/* biss_c.h — Драйвер BiSS C для энкодеров LENZ IRS (SPI + DMA). */
 
 #ifndef BISS_C_H
 #define BISS_C_H
@@ -49,18 +42,16 @@ typedef struct {
 
 BiSS_Status BiSS_Init(const BiSS_Config *cfg);
 
-/** Блокирующее чтение (для инициализации). */
+/* Блокирующее чтение (для инициализации). */
 BiSS_Status BiSS_Read(BiSS_Reading *out);
 
-/** Запуск неблокирующего чтения через DMA. */
+/* Запуск неблокирующего чтения через DMA. */
 void BiSS_StartRead(void);
 
-/** Готов ли результат DMA-чтения? */
+/* Готов ли результат DMA-чтения? */
 uint8_t BiSS_IsReady(void);
 
-/** Забрать результат последнего DMA-чтения. Вызывать после BiSS_IsReady()==1. */
+/* Забрать результат последнего DMA-чтения. Вызывать после BiSS_IsReady()==1. */
 BiSS_Status BiSS_GetResult(BiSS_Reading *out);
-
-const char *BiSS_StatusStr(BiSS_Status st);
 
 #endif /* BISS_C_H */

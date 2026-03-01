@@ -1,7 +1,4 @@
-/**
- * @file cmd_parser.c
- * @brief Реализация парсера команд.
- */
+/* cmd_parser.c — Парсер команд (en/dis/t=/kp=/ki=/kd=/op=). */
 
 #include "cmd_parser.h"
 #include <string.h>
@@ -31,12 +28,13 @@ static int parse_int(const char **p, int32_t *out)
 
 uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
 {
-    if (!line || !out)
+    if (!line || !out || line[0] == '\0')
         return 0;
 
     out->type = CMD_NONE;
     out->kp = out->ki = out->kd = 0.0f;
     out->target = 0.0f;
+    out->output_period_ms = 0;
 
     if (strcmp(line, "en") == 0) {
         out->type = CMD_ENABLE;
@@ -95,5 +93,5 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     }
 
     out->type = CMD_UNKNOWN;
-    return 0;
+    return 1;
 }

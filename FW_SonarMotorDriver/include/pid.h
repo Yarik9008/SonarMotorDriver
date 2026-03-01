@@ -1,7 +1,4 @@
-/**
- * @file pid.h
- * @brief PID-регулятор для замкнутого управления шаговым двигателем по энкодеру.
- */
+/* pid.h — PID-регулятор для замкнутого управления шаговым двигателем по энкодеру. */
 
 #ifndef PID_H
 #define PID_H
@@ -21,6 +18,5 @@ typedef struct {
 
 void PID_Reset(PID_State *pid);
 float PID_Update(PID_State *pid, float error, float dt);
-void PID_SetLimits(PID_State *pid, float min_val, float max_val);
 
 #endif /* PID_H */

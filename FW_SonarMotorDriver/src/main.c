@@ -1,14 +1,4 @@
-/**
- * @file main.c
- * @brief Управление шаговым двигателем с обратной связью по энкодеру BiSS-C.
- *
- * Вся математика — в градусах. Преобразование в шаги только перед DoSteps().
- * SPI-обмен с энкодером — через DMA (неблокирующий).
- *
- * Режимы:
- *   CLOSED_LOOP — PID по энкодеру (основной, удержание позиции)
- *   OPEN_LOOP   — автопереход при отвале энкодера
- */
+/* main.c — Позиционное управление шаговым двигателем (PID + BiSS-C энкодер). */
 
 #include "stm32f1xx_hal.h"
 #include "board.h"
@@ -21,61 +11,80 @@
 #include <string.h>
 #include <stdarg.h>
 
-/* ======================== Прототипы ======================== */
+/* --- Прототипы --- */
 
 static void SystemClock_Config(void);
 static void BSP_Init(void);
 static void PollTimer_Init(void);
 static void ProcessCommand(const Cmd_Result *cmd);
 static void SendResponse(const char *fmt, ...);
+static void PollCommands(void);
+static void Encoder_Accumulate(const BiSS_Reading *rd);
+static void Mode_Update(uint8_t enc_ok);
+static void MotorControl_Tick(uint8_t enc_ok);
+static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st);
+static void Heartbeat_Tick(void);
 
-/* ======================== Единицы: всё в градусах ======================== */
+/* --- Единицы: всё в градусах --- */
 
 #define DEG_PER_STEP        (360.0f / (float)MOTOR_STEPS_PER_REV)
 #define MAX_DEG_PER_TICK    ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ)
+#define DT_S                (1.0f / (float)POLL_FREQ_HZ)
+#define COUNTS_TO_DEG(c)    ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV)
 
 static inline int32_t DegToSteps(float deg)
 {
     return (int32_t)(deg / DEG_PER_STEP);
 }
 
-#define COUNTS_TO_DEG(c)    ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV)
+static inline float clampf(float v, float lo, float hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
 
-/* ======================== Периферия ======================== */
+static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+/* --- Периферия --- */
 
 static TIM_HandleTypeDef htim_poll;
 
-/* ======================== Режимы ======================== */
+/* --- Состояние --- */
 
 typedef enum { MODE_CLOSED_LOOP = 0, MODE_OPEN_LOOP = 1 } CtrlMode;
 
-/* ======================== Состояние ======================== */
-
 static PID_State g_pid = {
-    .kp = PID_KP_DEFAULT, .ki = PID_KI_DEFAULT, .kd = PID_KD_DEFAULT,
-    .integral = 0.0f, .prev_error = 0.0f,
+    .kp = PID_KP_DEFAULT, 
+    .ki = PID_KI_DEFAULT, 
+    .kd = PID_KD_DEFAULT,
+    .integral = 0.0f, 
+    .prev_error = 0.0f,
     .output_min = -MAX_DEG_PER_TICK,
     .output_max =  MAX_DEG_PER_TICK,
     .initialized = 0
 };
 
-static float    g_target_deg    = 0.0f;
-static uint8_t  g_enabled       = 0;
+static float    g_target_deg       = 0.0f;
+static uint8_t  g_enabled          = 0;
 static uint16_t g_output_period_ms = OUTPUT_PERIOD_MS_DEFAULT;
 
-static uint32_t g_enc_raw_prev  = 0xFFFFFFFF;
-static int64_t  g_enc_counts    = 0;
+static uint32_t g_enc_raw_prev     = 0xFFFFFFFF;
+static int64_t  g_enc_counts       = 0;
 
-static float    g_cl_deg_accum  = 0.0f;
+static float    g_cl_deg_accum     = 0.0f;
 
-static CtrlMode g_mode          = MODE_CLOSED_LOOP;
-static uint32_t g_enc_fail_cnt  = 0;
-static float    g_ol_pos_deg    = 0.0f;
+static CtrlMode g_mode             = MODE_CLOSED_LOOP;
+static uint32_t g_enc_fail_cnt     = 0;
+static float    g_ol_pos_deg       = 0.0f;
 
-static uint32_t g_stats[BISS_STATUS_COUNT];
-static uint32_t g_tx_busy;
 
-/* ======================== Вспомогательные ======================== */
+/* --- Вспомогательные --- */
 
 static void DoSteps(int32_t steps)
 {
@@ -86,9 +95,7 @@ static void DoSteps(int32_t steps)
 #endif
 }
 
-/* ================================================================
- *                          MAIN
- * ================================================================ */
+/* --- MAIN --- */
 
 int main(void)
 {
@@ -115,198 +122,195 @@ int main(void)
     PollTimer_Init();
     HAL_TIM_Base_Start(&htim_poll);
 
-    BiSS_Reading rd;
-    char buf[160];
-    uint32_t led_cnt    = 0;
-    uint16_t output_cnt = 0;
-
-    uint8_t enc_ok       = 0;
-    BiSS_Status st       = BISS_ERR_NO_RESPONSE;
-    uint8_t dma_pending  = 0;
-
     /* Первое блокирующее чтение для инициализации позиции */
-    st = BiSS_Read(&rd);
-    enc_ok = (st == BISS_OK || st == BISS_ERR_WARNING);
-    if (enc_ok) {
-        g_enc_counts   = (int64_t)rd.position;
-        g_enc_raw_prev = rd.position;
-        g_target_deg   = 0.0f;
-        g_ol_pos_deg   = COUNTS_TO_DEG(g_enc_counts);
-        g_enabled = 1;
-        Stepper_SetEnable(1);
-    }
+    BiSS_Reading rd;
+    BiSS_Status  st = BiSS_Read(&rd);
+    if (st == BISS_OK || st == BISS_ERR_WARNING)
+        Encoder_Accumulate(&rd);
 
     /* Запуск первого DMA-чтения */
     BiSS_StartRead();
-    dma_pending = 1;
+    uint8_t dma_pending = 1;
+    uint8_t enc_ok      = (g_enc_raw_prev != 0xFFFFFFFF);
 
     while (1) {
         USB_CDC_Task();
+        PollCommands();
 
-        /* ---------- Парсинг команды ---------- */
-        {
-            char cmd_line[64];
-            if (USB_CDC_ReadLine(cmd_line, sizeof(cmd_line)) > 0) {
-                Cmd_Result cmd;
-                if (Cmd_Parse(cmd_line, &cmd))
-                    ProcessCommand(&cmd);
-            }
-        }
-
-        /* ---------- Тик 1 кГц ---------- */
+        /* Ожидание тика 1 кГц */
         if (!__HAL_TIM_GET_FLAG(&htim_poll, TIM_FLAG_UPDATE))
             continue;
         __HAL_TIM_CLEAR_FLAG(&htim_poll, TIM_FLAG_UPDATE);
 
-        /* ---- 1. Забрать результат предыдущего DMA-чтения ---- */
+        /* 1. Забрать результат предыдущего DMA-чтения */
         if (dma_pending && BiSS_IsReady()) {
             st = BiSS_GetResult(&rd);
-            if (st < BISS_STATUS_COUNT)
-                g_stats[st]++;
-
             enc_ok = (st == BISS_OK || st == BISS_ERR_WARNING);
-
-            /* ---- 2. Многооборотная позиция (counts) ---- */
-            if (enc_ok) {
-                if (g_enc_raw_prev == 0xFFFFFFFF) {
-                    g_enc_counts   = (int64_t)rd.position;
-                    g_enc_raw_prev = rd.position;
-                    g_target_deg   = 0.0f;
-                    g_ol_pos_deg   = COUNTS_TO_DEG(g_enc_counts);
-                    g_enabled = 1;
-                    Stepper_SetEnable(1);
-                } else {
-                    int32_t delta = (int32_t)rd.position - (int32_t)g_enc_raw_prev;
-                    if (delta > (int32_t)(ENCODER_COUNTS_REV / 2))
-                        delta -= (int32_t)ENCODER_COUNTS_REV;
-                    else if (delta < -(int32_t)(ENCODER_COUNTS_REV / 2))
-                        delta += (int32_t)ENCODER_COUNTS_REV;
-                    g_enc_counts   += delta;
-                    g_enc_raw_prev = rd.position;
-                }
-            }
-
+            if (enc_ok)
+                Encoder_Accumulate(&rd);
             dma_pending = 0;
         }
 
-        /* ---- 3. Запуск следующего DMA-чтения (пока CPU обрабатывает PID) ---- */
+        /* 2. Запуск следующего DMA-чтения (пока CPU обрабатывает PID) */
         if (!dma_pending) {
             BiSS_StartRead();
             dma_pending = 1;
         }
 
-        /* ---- 4. Автопереключение CL ↔ OL ---- */
-        if (enc_ok) {
-            g_enc_fail_cnt = 0;
-            if (g_mode == MODE_OPEN_LOOP) {
-                g_mode = MODE_CLOSED_LOOP;
-                PID_Reset(&g_pid);
-                g_cl_deg_accum = 0.0f;
-            }
-        } else {
-            g_enc_fail_cnt++;
-            if (g_mode == MODE_CLOSED_LOOP &&
-                g_enc_fail_cnt >= (ENCODER_FAIL_MS / POLL_INTERVAL_MS))
-            {
-                g_mode      = MODE_OPEN_LOOP;
-                g_ol_pos_deg = COUNTS_TO_DEG(g_enc_counts);
-            }
+        /* 3. Контур управления */
+        Mode_Update(enc_ok);
+        MotorControl_Tick(enc_ok);
+        Telemetry_Tick(enc_ok, st);
+        Heartbeat_Tick();
+    }
+}
+
+/* --- Многооборотная позиция --- */
+
+static void Encoder_Accumulate(const BiSS_Reading *rd)
+{
+    if (g_enc_raw_prev == 0xFFFFFFFF) {
+        g_enc_counts   = (int64_t)rd->position;
+        g_enc_raw_prev = rd->position;
+        g_target_deg   = 0.0f;
+        g_ol_pos_deg   = COUNTS_TO_DEG(g_enc_counts);
+        g_enabled      = 1;
+        Stepper_SetEnable(1);
+        return;
+    }
+
+    int32_t delta = (int32_t)rd->position - (int32_t)g_enc_raw_prev;
+    if (delta > (int32_t)(ENCODER_COUNTS_REV / 2))
+        delta -= (int32_t)ENCODER_COUNTS_REV;
+    else if (delta < -(int32_t)(ENCODER_COUNTS_REV / 2))
+        delta += (int32_t)ENCODER_COUNTS_REV;
+
+    g_enc_counts   += delta;
+    g_enc_raw_prev = rd->position;
+}
+
+/* --- Автопереключение CL ↔ OL --- */
+
+static void Mode_Update(uint8_t enc_ok)
+{
+    if (enc_ok) {
+        g_enc_fail_cnt = 0;
+        if (g_mode == MODE_OPEN_LOOP) {
+            g_mode = MODE_CLOSED_LOOP;
+            PID_Reset(&g_pid);
+            g_cl_deg_accum = 0.0f;
         }
-
-        /* ---- 5. Управление мотором ---- */
-        if (g_enabled) {
-            const float dt = 1.0f / (float)POLL_FREQ_HZ;
-
-            if (g_mode == MODE_CLOSED_LOOP && enc_ok) {
-                float pos_deg = COUNTS_TO_DEG(g_enc_counts);
-                float err_deg = g_target_deg - pos_deg;
-
-                if (err_deg > PID_DEADBAND_DEG || err_deg < -PID_DEADBAND_DEG) {
-                    float pid_out_deg = PID_Update(&g_pid, err_deg, dt);
-
-                    g_cl_deg_accum += pid_out_deg;
-                    if (g_cl_deg_accum > MAX_DEG_PER_TICK)
-                        g_cl_deg_accum = MAX_DEG_PER_TICK;
-                    else if (g_cl_deg_accum < -MAX_DEG_PER_TICK)
-                        g_cl_deg_accum = -MAX_DEG_PER_TICK;
-
-                    int32_t steps = DegToSteps(g_cl_deg_accum);
-                    if (steps > (int32_t)MAX_STEPS_PER_POLL)
-                        steps = (int32_t)MAX_STEPS_PER_POLL;
-                    else if (steps < -(int32_t)MAX_STEPS_PER_POLL)
-                        steps = -(int32_t)MAX_STEPS_PER_POLL;
-
-                    if (steps != 0) {
-                        DoSteps(steps);
-                        g_cl_deg_accum -= (float)steps * DEG_PER_STEP;
-                    }
-                } else {
-                    Stepper_Stop();
-                    PID_Reset(&g_pid);
-                    g_cl_deg_accum = 0.0f;
-                }
-
-            } else if (g_mode == MODE_OPEN_LOOP) {
-                float err_deg = g_target_deg - g_ol_pos_deg;
-
-                if (err_deg > PID_DEADBAND_DEG || err_deg < -PID_DEADBAND_DEG) {
-                    if (err_deg > MAX_DEG_PER_TICK)
-                        err_deg = MAX_DEG_PER_TICK;
-                    else if (err_deg < -MAX_DEG_PER_TICK)
-                        err_deg = -MAX_DEG_PER_TICK;
-
-                    int32_t steps = DegToSteps(err_deg);
-                    if (steps > (int32_t)MAX_STEPS_PER_POLL)
-                        steps = (int32_t)MAX_STEPS_PER_POLL;
-                    else if (steps < -(int32_t)MAX_STEPS_PER_POLL)
-                        steps = -(int32_t)MAX_STEPS_PER_POLL;
-
-                    if (steps != 0) {
-                        DoSteps(steps);
-                        g_ol_pos_deg += (float)steps * DEG_PER_STEP;
-                    }
-                } else {
-                    Stepper_Stop();
-                }
-            }
-        } else {
-            Stepper_Stop();
-        }
-
-        /* ---- 6. Телеметрия ---- */
-        if (g_output_period_ms > 0 && USB_CDC_IsConnected()) {
-            output_cnt++;
-            if (output_cnt >= g_output_period_ms) {
-                output_cnt = 0;
-
-                float enc_deg  = enc_ok ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
-                float err_deg  = g_target_deg - enc_deg;
-                uint8_t err_code = enc_ok ? ERR_OK : (uint8_t)st;
-
-                int len = snprintf(buf, sizeof(buf),
-                    "cp:%.2f,tp:%.2f,pe:%.2f,m:%s,ec:%u\r\n",
-                    (double)enc_deg,
-                    (double)g_target_deg,
-                    (double)err_deg,
-                    (g_mode == MODE_CLOSED_LOOP) ? "cl" : "ol",
-                    (unsigned)err_code);
-
-                if (len > 0 && USB_CDC_Transmit((uint8_t *)buf, (uint16_t)len) != 0)
-                    g_tx_busy++;
-            }
-        }
-
-        /* ---- 7. Heartbeat LED ---- */
-        if (++led_cnt >= LED_TOGGLE_INTERVAL) {
-            led_cnt = 0;
-            HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+    } else {
+        g_enc_fail_cnt++;
+        if (g_mode == MODE_CLOSED_LOOP &&
+            g_enc_fail_cnt >= (ENCODER_FAIL_MS / POLL_INTERVAL_MS))
+        {
+            g_mode       = MODE_OPEN_LOOP;
+            g_ol_pos_deg = COUNTS_TO_DEG(g_enc_counts);
         }
     }
 }
 
-/* ================================================================
- *                      ОБРАБОТКА КОМАНД
- * ================================================================ */
+/* --- Управление мотором --- */
+
+static void MotorControl_Tick(uint8_t enc_ok)
+{
+    if (!g_enabled) {
+        Stepper_Stop();
+        return;
+    }
+
+    if (g_mode == MODE_CLOSED_LOOP && enc_ok) {
+        float pos_deg = COUNTS_TO_DEG(g_enc_counts);
+        float err_deg = g_target_deg - pos_deg;
+
+        if (err_deg > PID_DEADBAND_DEG || err_deg < -PID_DEADBAND_DEG) {
+            float pid_out = PID_Update(&g_pid, err_deg, DT_S);
+            g_cl_deg_accum = clampf(g_cl_deg_accum + pid_out,
+                                    -MAX_DEG_PER_TICK, MAX_DEG_PER_TICK);
+
+            int32_t steps = clampi(DegToSteps(g_cl_deg_accum),
+                                   -(int32_t)MAX_STEPS_PER_POLL,
+                                    (int32_t)MAX_STEPS_PER_POLL);
+            if (steps != 0) {
+                DoSteps(steps);
+                g_cl_deg_accum -= (float)steps * DEG_PER_STEP;
+            }
+        } else {
+            Stepper_Stop();
+            PID_Reset(&g_pid);
+            g_cl_deg_accum = 0.0f;
+        }
+
+    } else if (g_mode == MODE_OPEN_LOOP) {
+        float err_deg = g_target_deg - g_ol_pos_deg;
+
+        if (err_deg > PID_DEADBAND_DEG || err_deg < -PID_DEADBAND_DEG) {
+            err_deg = clampf(err_deg, -MAX_DEG_PER_TICK, MAX_DEG_PER_TICK);
+
+            int32_t steps = clampi(DegToSteps(err_deg),
+                                   -(int32_t)MAX_STEPS_PER_POLL,
+                                    (int32_t)MAX_STEPS_PER_POLL);
+            if (steps != 0) {
+                DoSteps(steps);
+                g_ol_pos_deg += (float)steps * DEG_PER_STEP;
+            }
+        } else {
+            Stepper_Stop();
+        }
+    }
+}
+
+/* --- Телеметрия и heartbeat --- */
+
+static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
+{
+    static uint16_t cnt = 0;
+
+    if (g_output_period_ms == 0 || !USB_CDC_IsConnected())
+        return;
+
+    if (++cnt < g_output_period_ms)
+        return;
+    cnt = 0;
+
+    char buf[128];
+    float enc_deg = enc_ok ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
+    float err_deg = g_target_deg - enc_deg;
+    uint8_t ec    = enc_ok ? ERR_OK : (uint8_t)st;
+
+    int len = snprintf(buf, sizeof(buf),
+        "cp:%.2f,tp:%.2f,pe:%.2f,m:%s,ec:%u\r\n",
+        (double)enc_deg,
+        (double)g_target_deg,
+        (double)err_deg,
+        (g_mode == MODE_CLOSED_LOOP) ? "cl" : "ol",
+        (unsigned)ec);
+
+    if (len > 0)
+        USB_CDC_Transmit((uint8_t *)buf, (uint16_t)len);
+}
+
+static void Heartbeat_Tick(void)
+{
+    static uint32_t cnt = 0;
+    if (++cnt >= LED_TOGGLE_INTERVAL) {
+        cnt = 0;
+        HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+    }
+}
+
+/* --- Обработка команд --- */
+
+static void PollCommands(void)
+{
+    char line[64];
+    if (USB_CDC_ReadLine(line, sizeof(line)) > 0) {
+        Cmd_Result cmd;
+        if (Cmd_Parse(line, &cmd))
+            ProcessCommand(&cmd);
+    }
+}
 
 static void SendResponse(const char *fmt, ...)
 {
@@ -328,7 +332,8 @@ static void ProcessCommand(const Cmd_Result *cmd)
         Stepper_SetEnable(1);
         PID_Reset(&g_pid);
         g_cl_deg_accum = 0.0f;
-        g_target_deg = (g_mode == MODE_CLOSED_LOOP) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
+        g_target_deg = (g_mode == MODE_CLOSED_LOOP)
+                        ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
         SendResponse("ok:en\r\n");
         break;
 
@@ -366,14 +371,16 @@ static void ProcessCommand(const Cmd_Result *cmd)
         SendResponse("ok:op=%u\r\n", (unsigned)g_output_period_ms);
         break;
 
+    case CMD_UNKNOWN:
+        SendResponse("err:unknown\r\n");
+        break;
+
     default:
         break;
     }
 }
 
-/* ================================================================
- *                   ИНИЦИАЛИЗАЦИЯ ПЕРИФЕРИИ
- * ================================================================ */
+/* --- Инициализация периферии --- */
 
 static void BSP_Init(void)
 {

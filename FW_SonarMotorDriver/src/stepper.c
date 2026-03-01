@@ -1,11 +1,4 @@
-/**
- * @file stepper.c
- * @brief Драйвер STEP/DIR для TMC2208. Импульсы генерируются аппаратно TIM4 PWM (без прерываний).
- *
- * Stepper_Steps() — неблокирующий: запускает PWM с нужной частотой и возвращает управление.
- * PWM генерирует импульсы аппаратно до следующего вызова, когда он останавливается.
- * Точность количества шагов обеспечивается замкнутым контуром (PID + энкодер).
- */
+/* stepper.c — Драйвер STEP/DIR для TMC2208 (TIM4 PWM). */
 
 #include "stepper.h"
 #include "board.h"
@@ -62,7 +55,7 @@ void Stepper_SetEnable(uint8_t enabled)
     HAL_GPIO_WritePin(ENABLE_PORT, ENABLE_PIN, enabled ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 
-void Stepper_SetDir(uint8_t dir_cw)
+static void Stepper_SetDir(uint8_t dir_cw)
 {
     HAL_GPIO_WritePin(DIR_PORT, DIR_PIN, dir_cw ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
@@ -74,11 +67,6 @@ void Stepper_Stop(void)
         HAL_GPIO_WritePin(STEP_PORT, STEP_PIN, GPIO_PIN_RESET);
         g_pwm_running = 0;
     }
-}
-
-void Stepper_Step(void)
-{
-    Stepper_Steps(1);
 }
 
 void Stepper_Steps(int32_t steps)

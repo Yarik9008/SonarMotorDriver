@@ -1,7 +1,4 @@
-/**
- * @file pid.c
- * @brief Реализация PID-регулятора.
- */
+/* pid.c — Реализация PID-регулятора. */
 
 #include "pid.h"
 
@@ -31,17 +28,10 @@ float PID_Update(PID_State *pid, float error, float dt)
     else if (out > pid->output_max)
         out = pid->output_max;
 
-    /* Anti-windup: ограничиваем интеграл */
+    /* Антинакрутка: ограничиваем интеграл */
     if (pid->ki != 0.0f && (out == pid->output_min || out == pid->output_max))
         pid->integral -= error * dt;
 
     return out;
 }
 
-void PID_SetLimits(PID_State *pid, float min_val, float max_val)
-{
-    if (!pid)
-        return;
-    pid->output_min = min_val;
-    pid->output_max = max_val;
-}
