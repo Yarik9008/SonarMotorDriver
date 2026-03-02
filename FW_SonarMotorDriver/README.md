@@ -1,4 +1,4 @@
-# FW_SonarMotorDriver — Closed-Loop Stepper + LENZ IRS
+# FW_SonarMotorDriver — Closed-Loop Stepper
 
 Прошивка для STM32F103C8 (Blue Pill): позиционное управление шаговым двигателем
 через **TMC2208** с обратной связью от абсолютного энкодера **LENZ IRS** (BiSS C).
