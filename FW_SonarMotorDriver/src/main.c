@@ -25,6 +25,7 @@ static void Mode_Update(uint8_t enc_ok); /* Автопереключение CL 
 static void MotorControl_Tick(uint8_t enc_ok); /* Управление мотором */
 static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st); /* Телеметрия */
 static void Heartbeat_Tick(void); /* Heartbeat */
+static void Scan_Tick(void); /* Сканирование сектора */
 
 /* --- Единицы: всё в градусах --- */
 
@@ -97,6 +98,19 @@ static uint32_t g_enc_fail_cnt     = 0;
 static float    g_ol_pos_deg       = 0.0f; /* Позиция в open-loop, градусы */
 static uint8_t  g_was_outside_db   = 0;    /* Флаг: были за пределами deadband (для snap) */
 static uint8_t  g_homing           = 0;    /* 1 = хоминг к начальной позиции (при старте) */
+
+/* --- Сканирование сектора --- */
+
+typedef enum { SCAN_IDLE, SCAN_MOVING, SCAN_DELAY } ScanState;
+
+static ScanState g_scan_state     = SCAN_IDLE;
+static float     g_scan_current   = 0.0f;
+static float     g_scan_start     = 0.0f;
+static float     g_scan_end       = 0.0f;
+static float     g_scan_step      = 0.0f;
+static uint16_t  g_scan_delay_ms  = 0;
+static uint16_t  g_scan_delay_cnt = 0;
+static int8_t    g_scan_direction = 1; /* +1 = к end, -1 = к start */
 
 
 /* --- Вспомогательные --- */
@@ -182,6 +196,7 @@ int main(void)
         /* 3. Контур управления */
         Mode_Update(enc_ok);
         MotorControl_Tick(enc_ok);
+        Scan_Tick();
         Telemetry_Tick(enc_ok, st);
         Heartbeat_Tick();
 
@@ -264,6 +279,8 @@ static void MotorControl_Tick(uint8_t enc_ok)
                                    -(int32_t)MAX_STEPS_PER_POLL,
                                     (int32_t)MAX_STEPS_PER_POLL);
             if (steps != 0) {
+                if (g_scan_state == SCAN_MOVING)
+                    HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
                 DoSteps(steps);
                 g_cl_deg_accum -= (float)steps * DEG_PER_STEP;
                 g_last_ctrl_deg = (float)steps * DEG_PER_STEP;
@@ -274,6 +291,8 @@ static void MotorControl_Tick(uint8_t enc_ok)
             if (g_was_outside_db) {
                 if (err_deg > 0.02f || err_deg < -0.02f) {
                     int32_t snap = (err_deg > 0.0f) ? 1 : -1;
+                    if (g_scan_state == SCAN_MOVING)
+                        HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
                     DoSteps(snap);
                     g_last_ctrl_deg = (float)snap * DEG_PER_STEP;
                 }
@@ -288,6 +307,12 @@ static void MotorControl_Tick(uint8_t enc_ok)
                     g_enc_counts -= (int64_t)ENCODER_COUNTS_REV;
                 else if (pos - g_target_deg < -180.0f)
                     g_enc_counts += (int64_t)ENCODER_COUNTS_REV;
+            }
+            if (g_scan_state == SCAN_MOVING) {
+                HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_SET);
+                g_scan_current = g_target_deg;
+                g_scan_state = SCAN_DELAY;
+                g_scan_delay_cnt = 0;
             }
             Stepper_Stop();
             PID_Reset(&g_pid);
@@ -304,6 +329,8 @@ static void MotorControl_Tick(uint8_t enc_ok)
                                    -(int32_t)MAX_STEPS_PER_POLL,
                                     (int32_t)MAX_STEPS_PER_POLL);
             if (steps != 0) {
+                if (g_scan_state == SCAN_MOVING)
+                    HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
                 DoSteps(steps);
                 g_ol_pos_deg += (float)steps * DEG_PER_STEP;
                 g_last_ctrl_deg = (float)steps * DEG_PER_STEP;
@@ -319,6 +346,12 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 else if (pos - STARTUP_TARGET_OFFSET_DEG < -180.0f)
                     pos += 360.0f;
                 g_ol_pos_deg = pos;
+            }
+            if (g_scan_state == SCAN_MOVING) {
+                HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_SET);
+                g_scan_current = g_target_deg;
+                g_scan_state = SCAN_DELAY;
+                g_scan_delay_cnt = 0;
             }
             Stepper_Stop();
         }
@@ -378,6 +411,36 @@ static void Heartbeat_Tick(void)
     if (++cnt >= LED_TOGGLE_INTERVAL) {
         cnt = 0;
         HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+    }
+}
+
+/* --- Сканирование сектора --- */
+
+static void Scan_Tick(void)
+{
+    if (g_scan_state == SCAN_IDLE)
+        return;
+
+    if (g_scan_state == SCAN_DELAY) {
+        g_scan_delay_cnt++;
+        if (g_scan_delay_cnt < g_scan_delay_ms)
+            return;
+
+        float next = g_scan_current + (float)g_scan_direction * g_scan_step;
+        if (g_scan_direction > 0 && next > g_scan_end) {
+            next = (g_scan_current >= g_scan_end) ? (g_scan_end - g_scan_step) : g_scan_end;
+            g_scan_direction = -1;
+        } else if (g_scan_direction < 0 && next < g_scan_start) {
+            next = (g_scan_current <= g_scan_start) ? (g_scan_start + g_scan_step) : g_scan_start;
+            g_scan_direction = 1;
+        }
+
+        g_target_deg = next;
+        g_scan_current = next;
+        g_scan_state = SCAN_MOVING;
+        HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
+        PID_Reset(&g_pid);
+        g_cl_deg_accum = 0.0f;
     }
 }
 
@@ -465,6 +528,42 @@ static void ProcessCommand(const Cmd_Result *cmd)
         SendResponse("ok:debug=%u\r\n", (unsigned)g_telemetry_debug);
         break;
 
+    case CMD_SCAN: {
+        float s = cmd->scan_start, e = cmd->scan_end, st = cmd->scan_step;
+        uint16_t d = cmd->scan_delay_ms;
+        if (s > e || st <= 0.0f) {
+            SendResponse("err:scan\r\n");
+            break;
+        }
+        g_scan_state = SCAN_MOVING;
+        g_target_deg = s;
+        g_scan_current = s;
+        g_scan_start = s;
+        g_scan_end = e;
+        g_scan_step = st;
+        g_scan_delay_ms = d;
+        g_scan_delay_cnt = 0;
+        g_scan_direction = 1;
+        g_homing = 0;
+        PID_Reset(&g_pid);
+        g_cl_deg_accum = 0.0f;
+        HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
+        SendResponse("ok:scan=%.2f,%.2f,%.2f,%u\r\n", (double)s, (double)e, (double)st, (unsigned)d);
+        break;
+    }
+
+    case CMD_STOP:
+        g_scan_state = SCAN_IDLE;
+        Stepper_Stop();
+        g_target_deg = (g_mode == MODE_CLOSED_LOOP)
+                        ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos_deg;
+        PID_Reset(&g_pid);
+        g_cl_deg_accum = 0.0f;
+        g_homing = 0;
+        HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
+        SendResponse("ok:stop\r\n");
+        break;
+
     case CMD_UNKNOWN:
         SendResponse("err:unknown\r\n");
         break;
@@ -488,6 +587,12 @@ static void BSP_Init(void)
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LED_PORT, &gpio);
     HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
+
+    gpio.Pin   = SYNC_PIN;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(SYNC_PORT, &gpio);
+    HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
 }
 
 static void PollTimer_Init(void)

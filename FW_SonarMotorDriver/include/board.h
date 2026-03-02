@@ -21,6 +21,10 @@
 #define LED_PIN                 GPIO_PIN_13
 #define LED_TOGGLE_INTERVAL     (POLL_FREQ_HZ / 2U)  /* Heartbeat ~1 Гц */
 
+/* -------- SYNC — пин синхронизатор (при достижении позиции / scan) -------- */
+#define SYNC_PORT               GPIOA
+#define SYNC_PIN                GPIO_PIN_1   /* PA1 — свободен */
+
 /* -------- SPI1 + THVD1452 — энкодер LENZ IRS (BiSS C) -------- */
 #define ENCODER_RESOLUTION_BITS 17U     /* 17 для IRS-I34/I50/I60; 18 для I70/I80/I90 */
 #define ENCODER_ACCURACY_DEG    0.05f   /* Погрешность, град (IRS-I50: 0.05, I60: 0.042, I34: 0.15) */

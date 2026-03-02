@@ -36,6 +36,8 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     out->target = 0.0f;
     out->output_period_ms = 0;
     out->debug = 0;
+    out->scan_start = out->scan_end = out->scan_step = 0.0f;
+    out->scan_delay_ms = 0;
 
     if (strcmp(line, "en") == 0) {
         out->type = CMD_ENABLE;
@@ -43,6 +45,10 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     }
     if (strcmp(line, "dis") == 0) {
         out->type = CMD_DISABLE;
+        return 1;
+    }
+    if (strcmp(line, "stop") == 0) {
+        out->type = CMD_STOP;
         return 1;
     }
 
@@ -101,6 +107,25 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
             return 0;
         out->type = CMD_SET_DEBUG;
         out->debug = (uint8_t)v;
+        return 1;
+    }
+
+    /* scan=start,end,step,delay — сканирование сектора */
+    if (strncmp(line, "scan=", 5) == 0) {
+        const char *p = line + 5;
+        float s, e, st;
+        int32_t d;
+        if (parse_float(&p, &s) != 0 || *p++ != ',' ||
+            parse_float(&p, &e) != 0 || *p++ != ',' ||
+            parse_float(&p, &st) != 0 || *p++ != ',')
+            return 0;
+        if (parse_int(&p, &d) != 0 || d < 0 || d > 65535)
+            return 0;
+        out->type = CMD_SCAN;
+        out->scan_start = s;
+        out->scan_end = e;
+        out->scan_step = st;
+        out->scan_delay_ms = (uint16_t)d;
         return 1;
     }
 

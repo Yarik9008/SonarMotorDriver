@@ -8,6 +8,8 @@
  *   kp=X, ki=X, kd=X — коэффициенты PID
  *   op=N         — период телеметрии (мс), 0 = выкл
  *   debug=0|1    — режим телеметрии: 0 = cp,ec; 1 = полная
+ *   scan=s,e,st,d — сканирование сектора (start,end,step,delay_ms), zigzag до stop
+ *   stop         — остановить любое движение мотора
  *   DFU          — перезагрузка (обрабатывается в usb_cdc.c)
  */
 
@@ -26,6 +28,8 @@ typedef enum {
     CMD_SET_KD,
     CMD_SET_OUTPUT_PERIOD,
     CMD_SET_DEBUG,
+    CMD_SCAN,
+    CMD_STOP,
     CMD_UNKNOWN
 } Cmd_Type;
 
@@ -35,6 +39,10 @@ typedef struct {
     float target;
     uint16_t output_period_ms;
     uint8_t debug;
+    float scan_start;
+    float scan_end;
+    float scan_step;
+    uint16_t scan_delay_ms;
 } Cmd_Result;
 
 uint8_t Cmd_Parse(const char *line, Cmd_Result *out);
