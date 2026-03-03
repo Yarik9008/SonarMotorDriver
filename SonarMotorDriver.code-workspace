@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "FW_SonarMotorDriver",
+			"path": "FW_SonarMotorDriver"
+		}
+	],
+	"settings": {}
+}
