@@ -98,6 +98,7 @@ static uint32_t g_enc_fail_cnt     = 0;
 static float    g_ol_pos_deg       = 0.0f; /* Позиция в open-loop, градусы */
 static uint8_t  g_was_outside_db   = 0;    /* Флаг: были за пределами deadband (для snap) */
 static uint8_t  g_homing           = 0;    /* 1 = хоминг к начальной позиции (при старте) */
+static int8_t   g_continuous_dir   = 0;    /* 0 = выкл, +1 = t=+, -1 = t=- */
 
 /* --- Сканирование сектора --- */
 
@@ -111,6 +112,7 @@ static float     g_scan_step      = 0.0f;
 static uint16_t  g_scan_delay_ms  = 0;
 static uint16_t  g_scan_delay_cnt = 0;
 static int8_t    g_scan_direction = 1; /* +1 = к end, -1 = к start */
+static int8_t    g_scan_infinite  = 0; /* 0 = zigzag, +1/-1 = бесконечное */
 
 
 /* --- Вспомогательные --- */
@@ -264,6 +266,25 @@ static void MotorControl_Tick(uint8_t enc_ok)
     }
 
     g_last_ctrl_deg = 0.0f;
+
+    /* Бесконечное вращение (t=+ / t=-): шагаем без PID */
+    if (g_continuous_dir != 0) {
+        int32_t steps = g_continuous_dir * (int32_t)MAX_STEPS_PER_POLL;
+        DoSteps(steps);
+        float deg_moved = (float)steps * DEG_PER_STEP;
+        g_last_ctrl_deg = deg_moved;
+
+        g_ol_pos_deg += deg_moved;
+        g_target_deg += deg_moved;
+
+        /* Сброс счётчиков при приближении к границам float, ~100k оборотов */
+        if (g_ol_pos_deg > 1e7f || g_ol_pos_deg < -1e7f) {
+            g_ol_pos_deg = 0.0f;
+            g_target_deg = 0.0f;
+            g_enc_counts = (int64_t)g_enc_raw_prev;
+        }
+        return;
+    }
 
     if (g_mode == MODE_CLOSED_LOOP && enc_ok) {
         float pos_deg = COUNTS_TO_DEG(g_enc_counts);
@@ -426,13 +447,29 @@ static void Scan_Tick(void)
         if (g_scan_delay_cnt < g_scan_delay_ms)
             return;
 
-        float next = g_scan_current + (float)g_scan_direction * g_scan_step;
-        if (g_scan_direction > 0 && next > g_scan_end) {
-            next = (g_scan_current >= g_scan_end) ? (g_scan_end - g_scan_step) : g_scan_end;
-            g_scan_direction = -1;
-        } else if (g_scan_direction < 0 && next < g_scan_start) {
-            next = (g_scan_current <= g_scan_start) ? (g_scan_start + g_scan_step) : g_scan_start;
-            g_scan_direction = 1;
+        float next;
+
+        if (g_scan_infinite != 0) {
+            next = g_scan_current + (float)g_scan_infinite * g_scan_step;
+
+            /* Сброс счётчиков при приближении к границам float */
+            if (next > 1e7f || next < -1e7f) {
+                float offset = g_scan_current;
+                g_scan_current -= offset;
+                next -= offset;
+                g_ol_pos_deg -= offset;
+                g_target_deg -= offset;
+                g_enc_counts -= (int64_t)(offset / 360.0f * (float)ENCODER_COUNTS_REV);
+            }
+        } else {
+            next = g_scan_current + (float)g_scan_direction * g_scan_step;
+            if (g_scan_direction > 0 && next > g_scan_end) {
+                next = (g_scan_current >= g_scan_end) ? (g_scan_end - g_scan_step) : g_scan_end;
+                g_scan_direction = -1;
+            } else if (g_scan_direction < 0 && next < g_scan_start) {
+                next = (g_scan_current <= g_scan_start) ? (g_scan_start + g_scan_step) : g_scan_start;
+                g_scan_direction = 1;
+            }
         }
 
         g_target_deg = next;
@@ -479,6 +516,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
 
     case CMD_ENABLE:
         g_enabled = 1;
+        g_continuous_dir = 0;
         Stepper_SetEnable(1);
         PID_Reset(&g_pid);
         g_cl_deg_accum = 0.0f;
@@ -490,17 +528,32 @@ static void ProcessCommand(const Cmd_Result *cmd)
 
     case CMD_DISABLE:
         g_enabled = 0;
+        g_continuous_dir = 0;
         Stepper_Stop();
         Stepper_SetEnable(0);
         SendResponse("ok:dis\r\n");
         break;
 
     case CMD_SET_TARGET:
+        g_continuous_dir = 0;
         g_target_deg = cmd->target;
         g_homing = 0;
         PID_Reset(&g_pid);
         g_cl_deg_accum = 0.0f;
         SendResponse("ok:t=%.2f\r\n", (double)g_target_deg);
+        break;
+
+    case CMD_CONTINUOUS:
+        g_continuous_dir = cmd->continuous_dir;
+        g_scan_state = SCAN_IDLE;
+        g_homing = 0;
+        PID_Reset(&g_pid);
+        g_cl_deg_accum = 0.0f;
+        if (!g_enabled) {
+            g_enabled = 1;
+            Stepper_SetEnable(1);
+        }
+        SendResponse("ok:t=%c\r\n", (g_continuous_dir > 0) ? '+' : '-');
         break;
 
     case CMD_SET_KP:
@@ -531,10 +584,16 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_SCAN: {
         float s = cmd->scan_start, e = cmd->scan_end, st = cmd->scan_step;
         uint16_t d = cmd->scan_delay_ms;
-        if (s > e || st <= 0.0f) {
+        int8_t inf = cmd->scan_infinite_dir;
+        if (inf == 0 && (s > e || st <= 0.0f)) {
             SendResponse("err:scan\r\n");
             break;
         }
+        if (inf != 0 && st <= 0.0f) {
+            SendResponse("err:scan\r\n");
+            break;
+        }
+        g_continuous_dir = 0;
         g_scan_state = SCAN_MOVING;
         g_target_deg = s;
         g_scan_current = s;
@@ -543,16 +602,24 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_step = st;
         g_scan_delay_ms = d;
         g_scan_delay_cnt = 0;
-        g_scan_direction = 1;
+        g_scan_direction = (inf != 0) ? inf : 1;
+        g_scan_infinite = inf;
         g_homing = 0;
         PID_Reset(&g_pid);
         g_cl_deg_accum = 0.0f;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
-        SendResponse("ok:scan=%.2f,%.2f,%.2f,%u\r\n", (double)s, (double)e, (double)st, (unsigned)d);
+        if (inf != 0)
+            SendResponse("ok:scan=%.2f,%c,%.2f,%u\r\n",
+                          (double)s, (inf > 0) ? '+' : '-', (double)st, (unsigned)d);
+        else
+            SendResponse("ok:scan=%.2f,%.2f,%.2f,%u\r\n",
+                          (double)s, (double)e, (double)st, (unsigned)d);
         break;
     }
 
     case CMD_STOP:
+        g_continuous_dir = 0;
+        g_scan_infinite = 0;
         g_scan_state = SCAN_IDLE;
         Stepper_Stop();
         g_target_deg = (g_mode == MODE_CLOSED_LOOP)

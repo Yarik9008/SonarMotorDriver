@@ -38,6 +38,8 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     out->debug = 0;
     out->scan_start = out->scan_end = out->scan_step = 0.0f;
     out->scan_delay_ms = 0;
+    out->scan_infinite_dir = 0;
+    out->continuous_dir = 0;
 
     if (strcmp(line, "en") == 0) {
         out->type = CMD_ENABLE;
@@ -49,6 +51,18 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     }
     if (strcmp(line, "stop") == 0) {
         out->type = CMD_STOP;
+        return 1;
+    }
+
+    /* t=+ / t=- — бесконечное вращение */
+    if (strcmp(line, "t=+") == 0) {
+        out->type = CMD_CONTINUOUS;
+        out->continuous_dir = +1;
+        return 1;
+    }
+    if (strcmp(line, "t=-") == 0) {
+        out->type = CMD_CONTINUOUS;
+        out->continuous_dir = -1;
         return 1;
     }
 
@@ -111,13 +125,26 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     }
 
     /* scan=start,end,step,delay — сканирование сектора */
+    /* scan=start,+,step,delay  — бесконечное сканирование вперёд  */
+    /* scan=start,-,step,delay  — бесконечное сканирование назад   */
     if (strncmp(line, "scan=", 5) == 0) {
         const char *p = line + 5;
-        float s, e, st;
+        float s, st;
         int32_t d;
-        if (parse_float(&p, &s) != 0 || *p++ != ',' ||
-            parse_float(&p, &e) != 0 || *p++ != ',' ||
-            parse_float(&p, &st) != 0 || *p++ != ',')
+        if (parse_float(&p, &s) != 0 || *p++ != ',')
+            return 0;
+
+        int8_t inf_dir = 0;
+        float e = 0.0f;
+        if ((*p == '+' || *p == '-') && *(p + 1) == ',') {
+            inf_dir = (*p == '+') ? +1 : -1;
+            p += 2;
+        } else {
+            if (parse_float(&p, &e) != 0 || *p++ != ',')
+                return 0;
+        }
+
+        if (parse_float(&p, &st) != 0 || *p++ != ',')
             return 0;
         if (parse_int(&p, &d) != 0 || d < 0 || d > 65535)
             return 0;
@@ -126,6 +153,7 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
         out->scan_end = e;
         out->scan_step = st;
         out->scan_delay_ms = (uint16_t)d;
+        out->scan_infinite_dir = inf_dir;
         return 1;
     }
 

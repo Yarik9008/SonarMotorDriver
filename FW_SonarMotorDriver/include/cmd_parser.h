@@ -5,10 +5,14 @@
  *   en           — включить драйвер + PID (удержание текущей позиции)
  *   dis          — выключить
  *   t=X          — целевая позиция (градусы)
+ *   t=+          — бесконечное вращение в положительном направлении
+ *   t=-          — бесконечное вращение в отрицательном направлении
  *   kp=X, ki=X, kd=X — коэффициенты PID
  *   op=N         — период телеметрии (мс), 0 = выкл
  *   debug=0|1    — режим телеметрии: 0 = cp,ec; 1 = полная
  *   scan=s,e,st,d — сканирование сектора (start,end,step,delay_ms), zigzag до stop
+ *   scan=s,+,st,d — бесконечное сканирование вперёд (start,step,delay_ms)
+ *   scan=s,-,st,d — бесконечное сканирование назад  (start,step,delay_ms)
  *   stop         — остановить любое движение мотора
  *   DFU          — перезагрузка (обрабатывается в usb_cdc.c)
  */
@@ -30,6 +34,7 @@ typedef enum {
     CMD_SET_DEBUG,
     CMD_SCAN,
     CMD_STOP,
+    CMD_CONTINUOUS,
     CMD_UNKNOWN
 } Cmd_Type;
 
@@ -43,6 +48,8 @@ typedef struct {
     float scan_end;
     float scan_step;
     uint16_t scan_delay_ms;
+    int8_t scan_infinite_dir; /* 0 = zigzag, +1 = scan,+, -1 = scan,- */
+    int8_t continuous_dir;   /* +1 = t=+, -1 = t=- */
 } Cmd_Result;
 
 uint8_t Cmd_Parse(const char *line, Cmd_Result *out);
