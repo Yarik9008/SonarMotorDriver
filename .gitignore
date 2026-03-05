@@ -13,3 +13,6 @@ Status Report.txt
 # Пользовательские настройки (не нужны коллегам)
 *.Canvas
 *.DXPPrj
+
+# PlatformIO / IDE (автогенерация)
+compile_commands.json
