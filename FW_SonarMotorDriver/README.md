@@ -1,8 +1,10 @@
 # FW_SonarMotorDriver — Closed-Loop Stepper
 
 Прошивка для STM32F103C8 (Blue Pill): позиционное управление шаговым двигателем
-через **TMC2208** с обратной связью от абсолютного энкодера **LENZ IRS** (BiSS C).
+через **TMC2209** с обратной связью от абсолютного энкодера **LENZ IRS** (BiSS C).
 При потере энкодера — автоматический переход в **open-loop**. Настройка и мониторинг — через **USB CDC**.
+
+> **Примечание:** Схема подключения TMC2209 (UART, DIAG) и связанные изменения **не протестированы** на аппаратуре.
 
 ## Содержание
 
@@ -77,7 +79,7 @@
 | 4         | DMA1_Ch2/Ch3 | SPI1 RX/TX для BiSS C      |
 | 5         | USB LP       | Обработка USB-пакетов      |
 | 6         | USART1       | UART TX/RX (команды, тел.) |
-| 15        | SysTick      | HAL_Delay(), HAL_GetTick() |
+| 15        | SysTick      | HAL_GetTick() (для таймаутов HAL) |
 
 
 ---
@@ -97,9 +99,12 @@
 | PA12  | USB_DP        | USB Data Plus                                             |
 | PB0   | GPIO_OUT (DE) | Driver Enable THVD1452 (active HIGH)                      |
 | PB1   | GPIO_OUT (RE) | Receiver Enable THVD1452 (active LOW)                     |
-| PB6   | GPIO_OUT      | ENN TMC2208 (LOW = вкл)                                   |
-| PB7   | GPIO_OUT      | DIR TMC2208                                               |
-| PB8   | TIM4_CH3 AF   | STEP TMC2208 (PWM)                                        |
+| PA2   | USART2_TX     | UART TMC2209 → PDN_UART (через 1 кОм)                      |
+| PA3   | USART2_RX     | UART TMC2209 ← PDN_UART (общая линия)                      |
+| PB6   | GPIO_OUT      | ENN TMC2209 (LOW = вкл)                                   |
+| PB7   | GPIO_OUT      | DIR TMC2209                                               |
+| PB8   | TIM4_CH3 AF   | STEP TMC2209 (PWM)                                        |
+| PA7   | GPIO_IN       | DIAG TMC2209 (StallGuard, Open Load; HIGH = ошибка)       |
 | PA1   | GPIO_OUT      | Пин синхронизатор (HIGH=позиция достигнута, LOW=движение) |
 | PC13  | GPIO_OUT      | LED heartbeat (~1 Гц)                                     |
 
@@ -117,10 +122,13 @@
  │      PB1 ├─────►│ RE       │      │                          │
  └──┬───┬───┘      └──────────┘      └──────────────────────────┘
     │   │
-    │   │           TMC2208
+    │   │           TMC2209
     │   ├── PB8 ──►│ STEP     │
     │   ├── PB7 ──►│ DIR      ├──── Шаговый двигатель
-    │   └── PB6 ──►│ ENN      │
+    │   ├── PB6 ──►│ ENN      │
+    │   ├── PA2 ──►│ PDN_UART │ (UART TX, через 1 кОм)
+    │   ├── PA3 ◄──│ PDN_UART │ (UART RX, общая линия)
+    │   └── PA7 ◄──│ DIAG     │ (StallGuard, Open Load)
     │              └──────────┘
     ├── PA9  ──►  UART TX ──► ПК / внешний MCU (115200 8N1)
     ├── PA10 ◄──  UART RX ◄── ПК / внешний MCU
@@ -169,6 +177,7 @@
 | USB       | 48 МГц             |
 | SPI1 (MA) | 0.75 МГц (APB2/64) |
 | TIM2      | 48 МГц (APB1 × 2)  |
+| DWT CYCCNT| 48 МГц (SYSCLK)     | Задержки Delay_ms/Delay_us |
 | TIM4      | 48 МГц (APB1 × 2)  |
 
 
@@ -185,7 +194,7 @@
 FW_SonarMotorDriver/
 ├── platformio.ini
 ├── include/
-│   ├── board.h              — выводы, частоты, TMC2208_MICROSTEPS, PID defaults
+│   ├── board.h              — выводы, частоты, TMC2209_MICROSTEPS, PID defaults
 │   ├── stm32f1xx_hal_conf.h — конфигурация HAL
 │   ├── biss_c.h             — BiSS C интерфейс
 │   ├── usb_cdc.h            — USB CDC API
@@ -212,10 +221,11 @@ FW_SonarMotorDriver/
 
 | Модуль       | Содержание                                                                |
 | ------------ | ------------------------------------------------------------------------- |
-| `board.h`    | Константы: выводы, TMC2208_MICROSTEPS (32), PID, буферы                   |
-| `main.c`     | BSP, clock, TIM2, CL/OL контроллер, команды, телеметрия                   |
+| `board.h`    | Константы: выводы, TMC2209_MICROSTEPS (32), PID, буферы                   |
+| `main.c`     | BSP, clock, TIM2, DWT, неблокирующая init-стейт-машина, CL/OL контроллер, команды, телеметрия |
 | `biss_c`     | BiSS C: SPI + DMA, разбор кадра, CRC6                                     |
-| `stepper`    | TIM4 PWM: STEP/DIR/ENABLE для TMC2208                                     |
+| `stepper`    | TIM4 PWM: STEP/DIR/ENABLE для TMC2209                                     |
+| `tmc2209`    | UART: неблокирующая стейт-машина настройки IRUN, IHOLD, микрошаг           |
 | `pid`        | PID с anti-windup и ограничением выхода                                   |
 | `cmd_parser` | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop) |
 | `uart`       | UART (USART1): кольцевые буферы TX/RX, readline                           |
@@ -240,7 +250,7 @@ pio run --target upload   # Прошивка
 ### Подключение
 
 1. Энкодер LENZ IRS → THVD1452 → PA5/PA6, PB0/PB1.
-2. TMC2208: STEP→PB8, DIR→PB7, ENN→PB6.
+2. TMC2209: STEP→PB8, DIR→PB7, ENN→PB6, PDN_UART↔PA2/PA3 (UART TX/RX), DIAG→PA7.
 3. Питание энкодера 5–12 В, питание драйвера.
 4. USB → ПК, открыть COM-порт.
 5. UART: PA9 (TX) / PA10 (RX).
@@ -438,7 +448,7 @@ cp:90.12,tp:180.00,pe:89.88,u:0.0000,m:ol,ec:2,kp:0.0100,ki:0.0000,kd:0.0000
 | Параметр    | Значение                                                                     |
 | ----------- | ---------------------------------------------------------------------------- |
 | Kp, Ki, Kd  | 0.025, 0.0, 0.0 (board.h)                                                    |
-| Микрошаг    | 32 (TMC2208_MICROSTEPS в board.h)                                            |
+| Микрошаг    | 32 (TMC2209_MICROSTEPS в board.h)                                            |
 | Deadband    | 0.1° (PID_DEADBAND_DEG)                                                      |
 | Макс. скор. | 1200°/с (MAX_SPEED_DEG_S)                                                    |
 | Драйвер     | включён по умолчанию при первом ответе энкодера (мотор сразу готов к работе) |
@@ -457,7 +467,9 @@ cp:90.12,tp:180.00,pe:89.88,u:0.0000,m:ol,ec:2,kp:0.0100,ki:0.0000,kd:0.0000
 #define ENCODER_COUNTS_REV      131072U  // 2^17
 #define ENCODER_FAIL_MS         500U     // 500 мс без ответа → open-loop
 #define MOTOR_FULL_STEPS_REV    200U     // 200 = 1.8°, 400 = 0.9°
-#define TMC2208_MICROSTEPS      32U      // 1, 2, 4, 8, 16, 32, 64, 128, 256
+#define TMC2209_MICROSTEPS      32U      // 1, 2, 4, 8, 16, 32, 64, 128, 256
+#define TMC2209_IRUN_MA         800U     // Ток при движении, мА
+#define TMC2209_IHOLD_MA        400U     // Ток удержания, мА
 #define MAX_SPEED_DEG_S         1200U    // Максимальная скорость, град/с
 #define PID_KP_DEFAULT          0.025f   // Kp по умолчанию
 #define PID_DEADBAND_DEG        0.1f     // Мёртвая зона PID, градусы (>= ENCODER_ACCURACY_DEG)
@@ -469,7 +481,7 @@ cp:90.12,tp:180.00,pe:89.88,u:0.0000,m:ol,ec:2,kp:0.0100,ki:0.0000,kd:0.0000
 ```
 
 При старте: мотор **включён по умолчанию** — драйвер активируется при первом ответе энкодера, после чего мотор движется в домашнюю позицию (0° + офсет) кратчайшим путём. Команда `en` нужна только после `dis`.
-Микрошаг и ток TMC2208 задаются аппаратно (пины MS1/MS2, Rsense).
+Микрошаг и ток TMC2209 задаются по UART при старте (board.h: TMC2209_IRUN_MA, TMC2209_IHOLD_MA, TMC2209_MICROSTEPS).
 
 ### Частота опроса
 

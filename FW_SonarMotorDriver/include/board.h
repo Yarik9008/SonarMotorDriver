@@ -36,20 +36,32 @@
 #define XCVR_RE_PORT            GPIOB
 #define XCVR_RE_PIN             GPIO_PIN_1  /* Receiver Enable (active LOW → RX SLO) */
 
-/* -------- TIM4 + TMC2208 — шаговый двигатель -------- */
+/* -------- TIM4 + TMC2209 — шаговый двигатель -------- */
 #define MOTOR_FULL_STEPS_REV    200U    /* Полных шагов на оборот (200 = 1.8°, 400 = 0.9°) */
-#define TMC2208_MICROSTEPS      32U     /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
-#define MOTOR_STEPS_PER_REV     (MOTOR_FULL_STEPS_REV * TMC2208_MICROSTEPS)
+#define TMC2209_MICROSTEPS      32U     /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
+#define MOTOR_STEPS_PER_REV     (MOTOR_FULL_STEPS_REV * TMC2209_MICROSTEPS)
 #define MOTOR_DIR_INVERT        1       /* 1 = инвертировать направление */
 #define MAX_SPEED_DEG_S         1200U   /* Максимальная скорость, град/с */
 #define MAX_STEPS_PER_POLL      ((MAX_SPEED_DEG_S * MOTOR_STEPS_PER_REV + 360U * POLL_FREQ_HZ - 1U) / (360U * POLL_FREQ_HZ))
 #define STEP_PORT               GPIOB
 #define STEP_PIN                GPIO_PIN_8
-#define STEP_PULSE_US           2U      /* Длительность импульса STEP (TMC2208: мин. 1–2 мкс) */
+#define STEP_PULSE_US           2U      /* Длительность импульса STEP (TMC2209: мин. 1–2 мкс) */
 #define DIR_PORT                GPIOB
 #define DIR_PIN                 GPIO_PIN_7
 #define ENABLE_PORT             GPIOB
 #define ENABLE_PIN              GPIO_PIN_6  /* ENN: LOW = включён, HIGH = выключен */
+
+/* -------- USART2 — UART TMC2209 (PDN_UART, single-wire half-duplex) -------- */
+#define TMC2209_UART            USART2
+#define TMC2209_UART_BAUDRATE    115200U
+#define TMC2209_UART_TX_PORT    GPIOA
+#define TMC2209_UART_TX_PIN     GPIO_PIN_2   /* PA2 — USART2_TX → PDN_UART (через 1 кОм) */
+#define TMC2209_UART_RX_PORT    GPIOA
+#define TMC2209_UART_RX_PIN     GPIO_PIN_3   /* PA3 — USART2_RX → PDN_UART (общая линия) */
+#define TMC2209_UART_ADDR       0U            /* Адрес драйвера (MS1=0, MS2=0) */
+#define TMC2209_RSENSE_OHM      0.11f         /* Резистор измерения тока, Ом */
+#define TMC2209_IRUN_MA         800U          /* Ток при движении, мА (IRUN) */
+#define TMC2209_IHOLD_MA        400U          /* Ток удержания, мА (IHOLD) */
 
 /* -------- Старт — целевая позиция при первом чтении энкодера -------- */
 #define STARTUP_TARGET_OFFSET_DEG 0.0f  /* Офсет от 0° (0 = идти в 0 по энкодеру) */
@@ -74,6 +86,10 @@
 #define USB_ENUM_DELAY_MS       1500U   /* Пауза для энумерации хостом */
 #define USB_TX_RING_SIZE        1024U   /* Размер кольцевого буфера передачи */
 #define USB_RX_RING_SIZE        256U    /* Размер кольцевого буфера приёма */
+
+/* -------- DWT-задержки (блокирующие, только HAL/USB internals) -------- */
+void Delay_Init(void);
+void Delay_ms(uint32_t ms);
 
 /* -------- IWDG — сторожевой таймер -------- */
 #define IWDG_PRESCALER          IWDG_PRESCALER_64   /* LSI 40 кГц / 64 = 625 Гц */

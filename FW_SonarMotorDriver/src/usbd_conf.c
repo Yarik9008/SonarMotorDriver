@@ -20,7 +20,7 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef *hpcd)
         gpio.Speed = GPIO_SPEED_FREQ_LOW;
         HAL_GPIO_Init(GPIOA, &gpio);
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
-        HAL_Delay(5);
+        Delay_ms(5);
 
         gpio.Pin  = GPIO_PIN_11 | GPIO_PIN_12;
         gpio.Mode = GPIO_MODE_INPUT;
@@ -193,7 +193,7 @@ uint32_t USBD_LL_GetRxDataSize(USBD_HandleTypeDef *pdev, uint8_t ep)
 
 void USBD_LL_Delay(uint32_t Delay)
 {
-    HAL_Delay(Delay);
+    Delay_ms(Delay);
 }
 
 /* --- USB IRQ --- */

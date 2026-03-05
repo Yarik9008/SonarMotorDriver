@@ -1,4 +1,4 @@
-/* stepper.c — Драйвер STEP/DIR для TMC2208 (TIM4 PWM). */
+/* stepper.c — Драйвер STEP/DIR для TMC2209 (TIM4 PWM). */
 
 #include "stepper.h"
 #include "board.h"
