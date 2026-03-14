@@ -170,17 +170,29 @@ uint16_t USB_CDC_ReadLine(char *buf, uint16_t size)
 
     uint16_t len = 0;
     uint16_t tail = rx_tail;
-    while (tail != rx_head && len < size - 1) {
+    uint8_t found_eol = 0;
+
+    while (tail != rx_head) {
         uint8_t c = rx_ring[tail];
         tail = (tail + 1) % USB_RX_RING_SIZE;
+
         if (c == '\r' || c == '\n') {
-            rx_tail = tail;
-            buf[len] = '\0';
-            return len;
+            if (c == '\r' && tail != rx_head && rx_ring[tail] == '\n')
+                tail = (tail + 1) % USB_RX_RING_SIZE;
+            found_eol = 1;
+            break;
         }
-        buf[len++] = (char)c;
+
+        if (len < size - 1)
+            buf[len++] = (char)c;
     }
-    return 0;
+
+    if (!found_eol)
+        return 0;
+
+    buf[len] = '\0';
+    rx_tail = tail;
+    return len;
 }
 
 void USB_CDC_RebootToDFU(void)

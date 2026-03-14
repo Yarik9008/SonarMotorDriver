@@ -3,7 +3,7 @@
  * Demonstrates driver init, register I/O, motor control,
  * and diagnostic output over USB virtual COM port.
  *
- * Commands: i m<N> s e d st t v a r diag c p u h
+ * Commands: i m<N> ms<N> ir<N> ih<N> s e d st t v a r diag c p u h
  */
 
 #include "board.h"
@@ -262,6 +262,9 @@ static void process_cmd(void)
     if (cmd[0] == 'h' && n == 1) {
         tx("i  init\r\n"
            "m<N> move (UART:VACTUAL / SD:steps/s)\r\n"
+           "ms<N> microsteps (1,2,4,8,16,32,64,128,256)\r\n"
+           "ir<N> run current, mA\r\n"
+           "ih<N> hold current, mA\r\n"
            "s  stop\r\n"
            "e  enable\r\n"
            "d  disable\r\n"
@@ -279,6 +282,33 @@ static void process_cmd(void)
     else if (cmd[0] == 'i' && n == 1) {
         tx("init\r\n");
         app_init_driver();
+    }
+    else if (n >= 3 && cmd[0] == 'i' && cmd[1] == 'r') {
+        uint16_t ma = (uint16_t)atoi(cmd + 2);
+        if (tmc2209_set_run_current(&s_drv, ma) == TMC2209_OK) {
+            snprintf(rsp, sizeof(rsp), "irun=%u mA\r\n", ma);
+            tx(rsp);
+        } else {
+            tx("ir: error (check rsense)\r\n");
+        }
+    }
+    else if (n >= 3 && cmd[0] == 'i' && cmd[1] == 'h') {
+        uint16_t ma = (uint16_t)atoi(cmd + 2);
+        if (tmc2209_set_hold_current(&s_drv, ma) == TMC2209_OK) {
+            snprintf(rsp, sizeof(rsp), "ihold=%u mA\r\n", ma);
+            tx(rsp);
+        } else {
+            tx("ih: error (must be <= irun)\r\n");
+        }
+    }
+    else if (n >= 3 && cmd[0] == 'm' && cmd[1] == 's') {
+        uint16_t ms = (uint16_t)atoi(cmd + 2);
+        if (tmc2209_set_microsteps(&s_drv, ms) == TMC2209_OK) {
+            snprintf(rsp, sizeof(rsp), "microsteps=%u\r\n", ms);
+            tx(rsp);
+        } else {
+            tx("ms: invalid (use 1,2,4,8,16,32,64,128,256)\r\n");
+        }
     }
     else if (cmd[0] == 'm') {
         int32_t val = (int32_t)atoi(cmd + 1);

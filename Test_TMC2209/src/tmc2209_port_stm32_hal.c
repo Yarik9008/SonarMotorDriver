@@ -48,18 +48,25 @@ static int port_uart_rx(uint8_t *data, uint16_t max_len,
                         uint32_t timeout_ms, uint16_t *received, void *ctx)
 {
     tmc2209_hal_ctx_t *hal = (tmc2209_hal_ctx_t *)ctx;
-    HAL_StatusTypeDef st = HAL_UART_Receive(hal->huart, data, max_len, timeout_ms);
-
-    if (st == HAL_OK) {
-        *received = max_len;
-        return 0;
-    }
-    if (st == HAL_TIMEOUT) {
-        *received = (uint16_t)(hal->huart->RxXferSize - hal->huart->RxXferCount);
-        return 1;
-    }
     *received = 0;
-    return -1;
+
+    if (max_len == 0) return 0;
+
+    HAL_StatusTypeDef st = HAL_UART_Receive(hal->huart, &data[0], 1, timeout_ms);
+    if (st == HAL_TIMEOUT)
+        return 1;
+    if (st != HAL_OK)
+        return -1;
+    *received = 1;
+
+    for (uint16_t i = 1; i < max_len; i++) {
+        st = HAL_UART_Receive(hal->huart, &data[i], 1, 2);
+        if (st != HAL_OK)
+            break;
+        (*received)++;
+    }
+
+    return (*received == max_len) ? 0 : 1;
 }
 
 static void port_uart_rx_flush(void *ctx)
