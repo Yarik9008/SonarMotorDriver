@@ -20,9 +20,13 @@
 #define TMC_REG_VACTUAL     0x22U
 #define TMC_REG_SGTHRS      0x40U
 #define TMC_REG_SG_RESULT   0x41U
+#define TMC_REG_TSTEP       0x12U
 #define TMC_REG_CHOPCONF    0x6CU
 #define TMC_REG_DRV_STATUS  0x6FU
 #define TMC_REG_PWMCONF     0x70U
+#define TMC_REG_PWM_SCALE   0x71U
+#define TMC_REG_MSCNT       0x6AU
+#define TMC_REG_MSCURACT    0x6BU
 
 /* ---- Bit-field helpers ---- */
 #define GCONF_PDN_DISABLE       (1U << 6)
@@ -453,6 +457,11 @@ uint16_t TMC2209_ReadSgResult(void)
     uint32_t v = 0;
     tmc_read(TMC_REG_SG_RESULT, &v);
     return (uint16_t)(v & 0x3FF);
+}
+
+uint8_t TMC2209_ReadReg(uint8_t reg, uint32_t *out)
+{
+    return tmc_read(reg, out);
 }
 
 /* ---- USART2 IRQ ---- */

@@ -31,5 +31,6 @@ void TMC2209_SetEnable(uint8_t en);
 uint8_t  TMC2209_ReadVersion(void);
 uint32_t TMC2209_ReadDrvStatus(void);
 uint16_t TMC2209_ReadSgResult(void);
+uint8_t  TMC2209_ReadReg(uint8_t reg, uint32_t *out);
 
 #endif /* TMC2209_H */
