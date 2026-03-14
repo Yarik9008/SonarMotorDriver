@@ -1,120 +1,263 @@
-/* Test_TMC2208 — USB CDC + TMC2209 Stepper Motor Control.
+/* Test_TMC2209 — USB CDC CLI example using TMC2209 library.
  *
- * Команды: i(init) m<N>(move) s(stop) e(on) d(off) st(status) v(ver) c(cs x10) p/u(mode) h(help)
+ * Demonstrates driver init, register I/O, motor control,
+ * and diagnostic output over USB virtual COM port.
+ *
+ * Commands: i m<N> s e d st t v a r diag c p u h
  */
 
 #include "board.h"
 #include "usb_cdc.h"
-#include "tmc2209.h"
+#include "tmc2209/tmc2209.h"
+#include "tmc2209_port_stm32_hal.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-#define CMD_BUF_SIZE  64
-#define RSP_BUF_SIZE  160
+#define CMD_BUF_SIZE   64
+#define RSP_BUF_SIZE   160
 #define CS_INTERVAL_MS 100U
+
+/* ---- Application mode (UART velocity vs STEP/DIR pulses) ---- */
+
+typedef enum { APP_MODE_UART = 0, APP_MODE_STEP_DIR } app_mode_t;
+
+/* ---- State ---- */
+
+static tmc2209_t          s_drv;
+static tmc2209_hal_ctx_t  s_hal_ctx;
+static UART_HandleTypeDef s_huart_tmc;
+static TIM_HandleTypeDef  s_htim_step;
+
+static app_mode_t s_mode          = APP_MODE_UART;
+static uint8_t    s_tim_running   = 0;
+static uint8_t    s_continuous_cs = 0;
+static uint8_t    s_drv_ready     = 0;
 
 static char cmd[CMD_BUF_SIZE];
 static char rsp[RSP_BUF_SIZE];
-static uint8_t continuous_cs = 0;
 
-/* Регистры TMC2209 для телеметрии */
-#define TMC_GSTAT     0x01U
-#define TMC_IFCNT     0x02U
-#define TMC_IOIN      0x06U
-#define TMC_TSTEP     0x12U
-#define TMC_SG_RESULT 0x41U
-#define TMC_MSCNT     0x6AU
-#define TMC_MSCURACT  0x6BU
-#define TMC_CHOPCONF  0x6CU
-#define TMC_DRV_STATUS 0x6FU
-#define TMC_PWM_SCALE 0x71U
+/* ---- Forward declarations ---- */
 
 static void SystemClock_Config(void);
+static void gpio_hw_init(void);
+static void uart_hw_init(void);
+static void step_tim_init(void);
+static void step_pwm_start(uint32_t steps_per_sec);
+static void step_pwm_stop(void);
+static void app_init_driver(void);
+
+/* ---- USB CDC helpers ---- */
 
 static void tx(const char *s)
 {
     USB_CDC_Transmit((const uint8_t *)s, (uint16_t)strlen(s));
 }
 
-static void tmc_debug_print(const char *s)
+static void debug_to_usb(const char *s) { tx(s); }
+
+/* ==== STEP/DIR PWM (application-level, not part of TMC2209 library) ==== */
+
+#define STEP_CNT_HZ (STEP_TIM_CLK_HZ / (STEP_TIM_PSC + 1U))
+
+static void step_tim_init(void)
 {
-    tx(s);
+    __HAL_RCC_TIM4_CLK_ENABLE();
+    s_htim_step.Instance               = STEP_TIM;
+    s_htim_step.Init.Prescaler         = STEP_TIM_PSC;
+    s_htim_step.Init.CounterMode       = TIM_COUNTERMODE_UP;
+    s_htim_step.Init.Period            = 0xFFFF;
+    s_htim_step.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+    s_htim_step.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+    HAL_TIM_PWM_Init(&s_htim_step);
+
+    TIM_OC_InitTypeDef oc = {0};
+    oc.OCMode     = TIM_OCMODE_PWM1;
+    oc.Pulse      = STEP_TIM_PULSE_US;
+    oc.OCPolarity = TIM_OCPOLARITY_HIGH;
+    oc.OCFastMode = TIM_OCFAST_DISABLE;
+    HAL_TIM_PWM_ConfigChannel(&s_htim_step, &oc, STEP_TIM_CH);
+    s_tim_running = 0;
 }
+
+static void step_pin_as_gpio(void)
+{
+    if (s_tim_running) {
+        HAL_TIM_PWM_Stop(&s_htim_step, STEP_TIM_CH);
+        s_tim_running = 0;
+    }
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin   = STEP_PIN;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(STEP_PORT, &gpio);
+    HAL_GPIO_WritePin(STEP_PORT, STEP_PIN, GPIO_PIN_RESET);
+}
+
+static void step_pin_as_pwm(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin       = STEP_PIN;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Speed     = GPIO_SPEED_FREQ_HIGH;
+    gpio.Alternate = STEP_TIM_AF;
+    HAL_GPIO_Init(STEP_PORT, &gpio);
+}
+
+static void step_pwm_start(uint32_t steps_per_sec)
+{
+    if (steps_per_sec == 0) {
+        if (s_tim_running) { HAL_TIM_PWM_Stop(&s_htim_step, STEP_TIM_CH); s_tim_running = 0; }
+        return;
+    }
+    uint32_t arr = STEP_CNT_HZ / steps_per_sec;
+    if (arr < 4)      arr = 4;
+    if (arr > 0xFFFF) arr = 0xFFFF;
+    __HAL_TIM_SET_AUTORELOAD(&s_htim_step, arr - 1);
+    __HAL_TIM_SET_COMPARE(&s_htim_step, STEP_TIM_CH, STEP_TIM_PULSE_US);
+    if (!s_tim_running) {
+        step_pin_as_pwm();
+        HAL_TIM_PWM_Start(&s_htim_step, STEP_TIM_CH);
+        s_tim_running = 1;
+    }
+}
+
+static void step_pwm_stop(void)
+{
+    if (s_tim_running) { HAL_TIM_PWM_Stop(&s_htim_step, STEP_TIM_CH); s_tim_running = 0; }
+    step_pin_as_gpio();
+}
+
+/* ==== App-level move/stop (routes to UART or STEP/DIR) ==== */
+
+static void app_move(int32_t value)
+{
+    if (s_mode == APP_MODE_UART) {
+        tmc2209_set_vactual(&s_drv, value);
+    } else {
+        if (value == 0) { step_pwm_stop(); return; }
+        HAL_GPIO_WritePin(DIR_PORT, DIR_PIN,
+                          (value > 0) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+        step_pwm_start((value > 0) ? (uint32_t)value : (uint32_t)(-value));
+    }
+}
+
+static void app_stop(void)
+{
+    if (s_mode == APP_MODE_UART)
+        tmc2209_stop(&s_drv);
+    else
+        step_pwm_stop();
+}
+
+static void app_set_mode(app_mode_t mode)
+{
+    if (mode == s_mode) return;
+    if (mode == APP_MODE_STEP_DIR) {
+        tmc2209_set_vactual(&s_drv, 0);
+        s_mode = APP_MODE_STEP_DIR;
+    } else {
+        step_pwm_stop();
+        s_mode = APP_MODE_UART;
+    }
+}
+
+/* ==== Telemetry output ==== */
 
 static void output_telemetry(void)
 {
     uint32_t v;
-    if (!TMC2209_ReadReg(TMC_GSTAT, &v)) v = 0;
-    snprintf(rsp, sizeof(rsp), "GSTAT=0x%02lX reset=%lu drv_err=%lu uv_cp=%lu\r\n",
-             v & 0xFF, (v >> 0) & 1, (v >> 1) & 1, (v >> 2) & 1);
-    tx(rsp);
 
-    if (TMC2209_ReadReg(TMC_IFCNT, &v)) {
-        snprintf(rsp, sizeof(rsp), "IFCNT=%lu\r\n", v & 0xFF);
+    tmc2209_gstat_t gs;
+    if (tmc2209_get_gstat(&s_drv, &gs) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp),
+                 "GSTAT=0x%02X reset=%u drv_err=%u uv_cp=%u\r\n",
+                 gs.reset | (gs.drv_err << 1) | (gs.uv_cp << 2),
+                 gs.reset, gs.drv_err, gs.uv_cp);
+        tx(rsp);
+    } else tx("GSTAT=?\r\n");
+
+    uint8_t ifcnt;
+    if (tmc2209_get_ifcnt(&s_drv, &ifcnt) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp), "IFCNT=%u\r\n", ifcnt);
         tx(rsp);
     } else tx("IFCNT=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_IOIN, &v)) {
-        snprintf(rsp, sizeof(rsp), "IOIN=0x%08lX ENN=%lu MS1=%lu MS2=%lu DIAG=%lu STEP=%lu DIR=%lu VERSION=0x%02lX\r\n",
-                 v, (v >> 0) & 1, (v >> 2) & 1, (v >> 3) & 1, (v >> 4) & 1, (v >> 7) & 1, (v >> 9) & 1, (v >> 24) & 0xFF);
+    tmc2209_ioin_t ioin;
+    if (tmc2209_get_ioin(&s_drv, &ioin) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp),
+                 "IOIN ENN=%u MS1=%u MS2=%u DIAG=%u STEP=%u DIR=%u VERSION=0x%02X\r\n",
+                 ioin.enn, ioin.ms1, ioin.ms2, ioin.diag,
+                 ioin.step, ioin.dir, ioin.version);
         tx(rsp);
     } else tx("IOIN=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_TSTEP, &v)) {
-        snprintf(rsp, sizeof(rsp), "TSTEP=%lu\r\n", v & 0xFFFFF);
+    uint32_t tstep;
+    if (tmc2209_get_tstep(&s_drv, &tstep) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp), "TSTEP=%lu\r\n", (unsigned long)tstep);
         tx(rsp);
     } else tx("TSTEP=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_SG_RESULT, &v)) {
-        snprintf(rsp, sizeof(rsp), "SG_RESULT=%lu\r\n", v & 0x3FF);
+    uint16_t sg;
+    if (tmc2209_get_sg_result(&s_drv, &sg) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp), "SG_RESULT=%u\r\n", sg);
         tx(rsp);
     } else tx("SG_RESULT=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_MSCNT, &v)) {
-        snprintf(rsp, sizeof(rsp), "MSCNT=%lu\r\n", v & 0x3FF);
+    if (tmc2209_read_reg(&s_drv, TMC2209_REG_MSCNT, &v) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp), "MSCNT=%lu\r\n", (unsigned long)(v & 0x3FF));
         tx(rsp);
     } else tx("MSCNT=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_MSCURACT, &v)) {
+    if (tmc2209_read_reg(&s_drv, TMC2209_REG_MSCURACT, &v) == TMC2209_OK) {
         int32_t cur_a = (int32_t)(v & 0x1FF);
         if (cur_a & 0x100) cur_a -= 512;
         int32_t cur_b = (int32_t)((v >> 16) & 0x1FF);
         if (cur_b & 0x100) cur_b -= 512;
-        snprintf(rsp, sizeof(rsp), "MSCURACT CUR_A=%ld CUR_B=%ld\r\n", (long)cur_a, (long)cur_b);
+        snprintf(rsp, sizeof(rsp), "MSCURACT CUR_A=%ld CUR_B=%ld\r\n",
+                 (long)cur_a, (long)cur_b);
         tx(rsp);
     } else tx("MSCURACT=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_CHOPCONF, &v)) {
-        snprintf(rsp, sizeof(rsp), "CHOPCONF=0x%08lX MRES=%lu\r\n", v, (v >> 24) & 0x0F);
+    if (tmc2209_read_reg(&s_drv, TMC2209_REG_CHOPCONF, &v) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp), "CHOPCONF=0x%08lX MRES=%lu\r\n",
+                 (unsigned long)v, (unsigned long)((v >> 24) & 0x0F));
         tx(rsp);
     } else tx("CHOPCONF=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_DRV_STATUS, &v)) {
-        snprintf(rsp, sizeof(rsp), "DRV_STATUS=0x%08lX stst=%lu stealth=%lu cs_actual=%lu s2ga=%lu s2gb=%lu ola=%lu olb=%lu ot=%lu otpw=%lu\r\n",
-                 v, (v >> 31) & 1, (v >> 30) & 1, (v >> 16) & 0x1F, (v >> 2) & 1, (v >> 3) & 1, (v >> 6) & 1, (v >> 7) & 1, (v >> 1) & 1, (v >> 0) & 1);
+    if (tmc2209_read_reg(&s_drv, TMC2209_REG_DRV_STATUS, &v) == TMC2209_OK) {
+        snprintf(rsp, sizeof(rsp),
+                 "DRV_STATUS=0x%08lX stst=%lu stealth=%lu cs_actual=%lu "
+                 "s2ga=%lu s2gb=%lu ola=%lu olb=%lu ot=%lu otpw=%lu\r\n",
+                 (unsigned long)v,
+                 (v >> 31) & 1, (v >> 30) & 1, (v >> 16) & 0x1F,
+                 (v >> 2)  & 1, (v >> 3)  & 1, (v >> 6)  & 1,
+                 (v >> 7)  & 1, (v >> 1)  & 1, (v >> 0)  & 1);
         tx(rsp);
     } else tx("DRV_STATUS=?\r\n");
 
-    if (TMC2209_ReadReg(TMC_PWM_SCALE, &v)) {
+    if (tmc2209_read_reg(&s_drv, TMC2209_REG_PWM_SCALE, &v) == TMC2209_OK) {
         int32_t auto_off = (int32_t)((v >> 16) & 0x1FF);
         if (auto_off & 0x100) auto_off -= 512;
-        snprintf(rsp, sizeof(rsp), "PWM_SCALE sum=%lu auto=%ld\r\n", v & 0xFF, (long)auto_off);
+        snprintf(rsp, sizeof(rsp), "PWM_SCALE sum=%lu auto=%ld\r\n",
+                 (unsigned long)(v & 0xFF), (long)auto_off);
         tx(rsp);
     } else tx("PWM_SCALE=?\r\n");
 }
 
+/* ==== CLI command processor ==== */
+
 static void process_cmd(void)
 {
-    if (!USB_CDC_IsConnected())
-        return;
+    if (!USB_CDC_IsConnected()) return;
 
     uint16_t n = USB_CDC_ReadLine(cmd, CMD_BUF_SIZE);
-    if (n == 0)
-        return;
+    if (n == 0) return;
     cmd[n] = '\0';
 
-    const char *mode_str = (TMC2209_GetMode() == TMC_MODE_UART) ? "UA" : "SD";
+    const char *mode_str = (s_mode == APP_MODE_UART) ? "UA" : "SD";
 
     if (cmd[0] == 'h' && n == 1) {
         tx("i  init\r\n"
@@ -127,61 +270,206 @@ static void process_cmd(void)
            "st status\r\n"
            "t  telemetry (all regs)\r\n"
            "v  version\r\n"
+           "a  scan addrs 0..3\r\n"
+           "r  read IOIN (single)\r\n"
+           "diag  transport diag\r\n"
            "c  current x10 (cs loop, s=stop)\r\n"
            "h  help\r\n");
     }
     else if (cmd[0] == 'i' && n == 1) {
-        TMC2209_InitStart();
         tx("init\r\n");
+        app_init_driver();
     }
     else if (cmd[0] == 'm') {
         int32_t val = (int32_t)atoi(cmd + 1);
-        TMC2209_Move(val);
+        app_move(val);
         snprintf(rsp, sizeof(rsp), "%s=%ld\r\n", mode_str, (long)val);
         tx(rsp);
     }
     else if (cmd[0] == 's' && n == 1) {
-        continuous_cs = 0;
-        TMC2209_Stop();
+        s_continuous_cs = 0;
+        app_stop();
         tx("stop\r\n");
     }
     else if (cmd[0] == 's' && cmd[1] == 't') {
-        uint32_t st = TMC2209_ReadDrvStatus();
-        snprintf(rsp, sizeof(rsp), "DRV=0x%08lX [%s]\r\n", (unsigned long)st, mode_str);
+        uint32_t st = 0;
+        if (tmc2209_read_reg(&s_drv, TMC2209_REG_DRV_STATUS, &st) == TMC2209_OK)
+            snprintf(rsp, sizeof(rsp), "DRV=0x%08lX [%s]\r\n",
+                     (unsigned long)st, mode_str);
+        else
+            snprintf(rsp, sizeof(rsp), "DRV= transport error [%s]\r\n", mode_str);
         tx(rsp);
     }
     else if (cmd[0] == 'e' && n == 1) {
-        TMC2209_SetEnable(1);
+        tmc2209_enable(&s_drv);
         tx("on\r\n");
     }
-    else if (cmd[0] == 'd' && n == 1) {
-        TMC2209_SetEnable(0);
+    else if (cmd[0] == 'd' && n >= 1 && cmd[1] != 'i') {
+        tmc2209_disable(&s_drv);
         tx("off\r\n");
     }
+    else if (n >= 4 && memcmp(cmd, "diag", 4) == 0) {
+        snprintf(rsp, sizeof(rsp),
+                 "addr=%u rsense=%.2f irun=%u ihold=%u mstep=%u delay=%uus\r\n",
+                 s_drv.cfg.addr, (double)s_drv.cfg.rsense,
+                 s_drv.cfg.irun_ma, s_drv.cfg.ihold_ma,
+                 s_drv.cfg.microsteps, s_drv.cfg.reply_delay_us);
+        tx(rsp);
+        tx("Reading IOIN...\r\n");
+        tmc2209_ioin_t ioin;
+        if (tmc2209_get_ioin(&s_drv, &ioin) == TMC2209_OK) {
+            snprintf(rsp, sizeof(rsp), "IOIN VERSION=0x%02X\r\n", ioin.version);
+            tx(rsp);
+        } else {
+            tx("IOIN read FAILED\r\n");
+        }
+    }
     else if (cmd[0] == 'p' && n == 1) {
-        TMC2209_SetMode(TMC_MODE_STEP_DIR);
+        app_set_mode(APP_MODE_STEP_DIR);
         tx("mode:SD\r\n");
     }
     else if (cmd[0] == 'u' && n == 1) {
-        TMC2209_SetMode(TMC_MODE_UART);
+        app_set_mode(APP_MODE_UART);
         tx("mode:UA\r\n");
     }
     else if (cmd[0] == 't' && n == 1) {
         output_telemetry();
     }
+    else if (cmd[0] == 'a' && n == 1) {
+        tx("scan addrs 0..3:\r\n");
+        for (uint8_t a = 0; a <= 3; a++) {
+            uint32_t v = 0;
+            if (tmc2209_read_reg_addr(&s_drv, a, TMC2209_REG_IOIN, &v) == TMC2209_OK
+                && ((v >> 24) & 0xFF) == TMC2209_VERSION_EXPECTED) {
+                snprintf(rsp, sizeof(rsp), "  addr %u: TMC2209 OK (IOIN=0x%08lX)\r\n",
+                         a, (unsigned long)v);
+                tx(rsp);
+            }
+        }
+    }
+    else if (cmd[0] == 'r' && n == 1) {
+        tmc2209_ioin_t ioin;
+        if (tmc2209_get_ioin(&s_drv, &ioin) == TMC2209_OK) {
+            snprintf(rsp, sizeof(rsp),
+                     "IOIN VERSION=0x%02X ENN=%u MS1=%u MS2=%u\r\n",
+                     ioin.version, ioin.enn, ioin.ms1, ioin.ms2);
+            tx(rsp);
+        } else {
+            tx("IOIN read FAILED\r\n");
+        }
+    }
     else if (cmd[0] == 'v' && n == 1) {
-        uint8_t v = TMC2209_ReadVersion();
-        snprintf(rsp, sizeof(rsp), "IC=0x%02X%s\r\n", v, (v == 0x21) ? " OK" : " ??");
-        tx(rsp);
+        uint8_t ver = 0;
+        if (tmc2209_get_version(&s_drv, &ver) == TMC2209_OK) {
+            snprintf(rsp, sizeof(rsp), "IC=0x%02X%s\r\n",
+                     ver, (ver == 0x21) ? " OK" : " ??");
+            tx(rsp);
+        } else {
+            tx("IC= transport error (IOIN read failed)\r\n");
+        }
     }
     else if (cmd[0] == 'c' && n == 1) {
-        continuous_cs = 1;
+        s_continuous_cs = 1;
         tx("cs loop (s=stop)\r\n");
     }
     else {
         tx("h\r\n");
     }
 }
+
+/* ==== HAL UART callbacks (board-specific, called by HAL internally) ==== */
+
+void HAL_UART_MspInit(UART_HandleTypeDef *h)
+{
+    if (h->Instance != TMC2209_UART) return;
+    __HAL_RCC_USART2_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin       = TMC2209_UART_TX_PIN;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Speed     = GPIO_SPEED_FREQ_HIGH;
+    gpio.Alternate = GPIO_AF7_USART2;
+    HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
+
+    gpio.Pin  = TMC2209_UART_RX_PIN;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
+
+    HAL_NVIC_SetPriority(USART2_IRQn, IRQ_PRIO_TMC_UART, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+}
+
+void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
+{
+    if (h->Instance != TMC2209_UART) return;
+    __HAL_RCC_USART2_CLK_DISABLE();
+    HAL_GPIO_DeInit(TMC2209_UART_TX_PORT, TMC2209_UART_TX_PIN);
+    HAL_GPIO_DeInit(TMC2209_UART_RX_PORT, TMC2209_UART_RX_PIN);
+    HAL_NVIC_DisableIRQ(USART2_IRQn);
+}
+
+/* ==== Hardware init ==== */
+
+static void gpio_hw_init(void)
+{
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    HAL_GPIO_WritePin(ENABLE_PORT, ENABLE_PIN, GPIO_PIN_SET);
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin   = ENABLE_PIN;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(ENABLE_PORT, &gpio);
+    gpio.Pin = DIR_PIN;
+    HAL_GPIO_Init(DIR_PORT, &gpio);
+    gpio.Pin = STEP_PIN;
+    HAL_GPIO_Init(STEP_PORT, &gpio);
+}
+
+static void uart_hw_init(void)
+{
+    s_huart_tmc.Instance          = TMC2209_UART;
+    s_huart_tmc.Init.BaudRate     = TMC2209_UART_BAUDRATE;
+    s_huart_tmc.Init.WordLength   = UART_WORDLENGTH_8B;
+    s_huart_tmc.Init.StopBits     = UART_STOPBITS_1;
+    s_huart_tmc.Init.Parity       = UART_PARITY_NONE;
+    s_huart_tmc.Init.Mode         = UART_MODE_TX_RX;
+    s_huart_tmc.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+    s_huart_tmc.Init.OverSampling = UART_OVERSAMPLING_16;
+    HAL_UART_Init(&s_huart_tmc);
+}
+
+/* ==== Driver init helper ==== */
+
+static void app_init_driver(void)
+{
+    tmc2209_config_t cfg = TMC2209_DEFAULT_CONFIG;
+    cfg.addr           = TMC2209_UART_ADDR;
+    cfg.rsense         = TMC2209_RSENSE_OHM;
+    cfg.irun_ma        = TMC2209_IRUN_MA;
+    cfg.ihold_ma       = TMC2209_IHOLD_MA;
+    cfg.microsteps     = TMC2209_MICROSTEPS;
+    cfg.reply_delay_us = TMC_REPLY_DELAY_US;
+
+    tmc2209_io_t io;
+    tmc2209_port_stm32_hal_fill_io(&io, &s_hal_ctx);
+
+    tmc2209_result_t res = tmc2209_init(&s_drv, &cfg, &io);
+    if (res == TMC2209_OK) {
+        tmc2209_enable(&s_drv);
+        s_drv_ready = 1;
+        s_mode = APP_MODE_UART;
+        tx("init ok\r\n");
+    } else {
+        s_drv_ready = 0;
+        snprintf(rsp, sizeof(rsp), "init FAIL: %s\r\n", tmc2209_result_str(res));
+        tx(rsp);
+    }
+}
+
+/* ==== Clock config ==== */
 
 static void SystemClock_Config(void)
 {
@@ -212,60 +500,66 @@ static void SystemClock_Config(void)
     HAL_RCCEx_PeriphCLKConfig(&pclk);
 }
 
-void SysTick_Handler(void)
-{
-    HAL_IncTick();
-}
+/* ==== IRQ handlers ==== */
+
+void SysTick_Handler(void)  { HAL_IncTick(); }
+void USART2_IRQHandler(void) { HAL_UART_IRQHandler(&s_huart_tmc); }
+
+/* ==== main ==== */
 
 int main(void)
 {
     HAL_Init();
     SystemClock_Config();
-    USB_CDC_Init();
-    TMC2209_SetDebugPrint(tmc_debug_print);
-    TMC2209_InitStart();
 
-    uint8_t greeted = 0, reported = 0;
+    tmc2209_port_stm32_dwt_init();
+    gpio_hw_init();
+    uart_hw_init();
+    step_tim_init();
+    USB_CDC_Init();
+
+    /* Platform context for TMC2209 port */
+    s_hal_ctx.huart       = &s_huart_tmc;
+    s_hal_ctx.en_port     = ENABLE_PORT;
+    s_hal_ctx.en_pin      = ENABLE_PIN;
+    s_hal_ctx.sysclk_hz   = SYSCLK_HZ;
+    s_hal_ctx.half_duplex = 0;
+    s_hal_ctx.debug_fn    = debug_to_usb;
+
+    /* Initial driver init */
+    app_init_driver();
+
+    uint8_t  greeted     = 0;
     uint32_t last_cs_tick = 0;
 
     while (1) {
         USB_CDC_Task();
-        TMC2209_Status st = TMC2209_Poll();
 
         if (USB_CDC_IsConnected()) {
-            if (continuous_cs) {
+            if (s_continuous_cs) {
                 uint32_t now = HAL_GetTick();
                 if ((uint32_t)(now - last_cs_tick) >= CS_INTERVAL_MS) {
                     last_cs_tick = now;
-                    uint8_t cs[10];
-                    for (int i = 0; i < 10; i++) {
-                        uint32_t drv = TMC2209_ReadDrvStatus();
-                        cs[i] = (uint8_t)((drv >> 16) & 0x1FU);
-                    }
-                    snprintf(rsp, sizeof(rsp), "cs:%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
-                             cs[0], cs[1], cs[2], cs[3], cs[4], cs[5], cs[6], cs[7], cs[8], cs[9]);
+                    tmc2209_drv_status_t ds;
+                    tmc2209_result_t r = tmc2209_get_drv_status(&s_drv, &ds);
+                    snprintf(rsp, sizeof(rsp), "cs:%u%s\r\n",
+                             (r == TMC2209_OK) ? ds.cs_actual : 0,
+                             (r == TMC2209_OK) ? "" : " ?");
                     tx(rsp);
                 }
             }
             if (!greeted) {
                 tx("TMC2209 ready. h for help\r\n");
+                if (s_drv_ready)
+                    tx("init ok\r\n");
+                else
+                    tx("init FAIL (use 'i' to retry)\r\n");
                 greeted = 1;
-            }
-            if (!reported && st == TMC_DONE) {
-#if TMC2209_USE_UART_MODE
-                TMC2209_SetMode(TMC_MODE_UART);
-#endif
-                tx("init ok (128 mstep, 1A)\r\n");
-                output_telemetry();
-                reported = 1;
-            } else if (!reported && st == TMC_ERROR) {
-                tx("init FAIL\r\n");
-                reported = 1;
             }
             process_cmd();
         } else {
-            greeted = reported = 0;
-            continuous_cs = 0;
+            greeted = 0;
+            s_continuous_cs = 0;
         }
     }
 }
