@@ -33,4 +33,6 @@ uint32_t TMC2209_ReadDrvStatus(void);
 uint16_t TMC2209_ReadSgResult(void);
 uint8_t  TMC2209_ReadReg(uint8_t reg, uint32_t *out);
 
+void TMC2209_SetDebugPrint(void (*fn)(const char *str));
+
 #endif /* TMC2209_H */

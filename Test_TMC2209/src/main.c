@@ -12,9 +12,11 @@
 
 #define CMD_BUF_SIZE  64
 #define RSP_BUF_SIZE  160
+#define CS_INTERVAL_MS 100U
 
 static char cmd[CMD_BUF_SIZE];
 static char rsp[RSP_BUF_SIZE];
+static uint8_t continuous_cs = 0;
 
 /* Регистры TMC2209 для телеметрии */
 #define TMC_GSTAT     0x01U
@@ -33,6 +35,11 @@ static void SystemClock_Config(void);
 static void tx(const char *s)
 {
     USB_CDC_Transmit((const uint8_t *)s, (uint16_t)strlen(s));
+}
+
+static void tmc_debug_print(const char *s)
+{
+    tx(s);
 }
 
 static void output_telemetry(void)
@@ -118,8 +125,9 @@ static void process_cmd(void)
            "p  STEP/DIR mode\r\n"
            "u  UART mode\r\n"
            "st status\r\n"
+           "t  telemetry (all regs)\r\n"
            "v  version\r\n"
-           "c  current x10 (cs_actual)\r\n"
+           "c  current x10 (cs loop, s=stop)\r\n"
            "h  help\r\n");
     }
     else if (cmd[0] == 'i' && n == 1) {
@@ -133,6 +141,7 @@ static void process_cmd(void)
         tx(rsp);
     }
     else if (cmd[0] == 's' && n == 1) {
+        continuous_cs = 0;
         TMC2209_Stop();
         tx("stop\r\n");
     }
@@ -157,20 +166,17 @@ static void process_cmd(void)
         TMC2209_SetMode(TMC_MODE_UART);
         tx("mode:UA\r\n");
     }
+    else if (cmd[0] == 't' && n == 1) {
+        output_telemetry();
+    }
     else if (cmd[0] == 'v' && n == 1) {
         uint8_t v = TMC2209_ReadVersion();
         snprintf(rsp, sizeof(rsp), "IC=0x%02X%s\r\n", v, (v == 0x21) ? " OK" : " ??");
         tx(rsp);
     }
     else if (cmd[0] == 'c' && n == 1) {
-        uint8_t cs[10];
-        for (int i = 0; i < 10; i++) {
-            uint32_t st = TMC2209_ReadDrvStatus();
-            cs[i] = (uint8_t)((st >> 16) & 0x1FU);  /* cs_actual 0-31 */
-        }
-        snprintf(rsp, sizeof(rsp), "cs:%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
-                 cs[0], cs[1], cs[2], cs[3], cs[4], cs[5], cs[6], cs[7], cs[8], cs[9]);
-        tx(rsp);
+        continuous_cs = 1;
+        tx("cs loop (s=stop)\r\n");
     }
     else {
         tx("h\r\n");
@@ -216,15 +222,31 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
     USB_CDC_Init();
+    TMC2209_SetDebugPrint(tmc_debug_print);
     TMC2209_InitStart();
 
     uint8_t greeted = 0, reported = 0;
+    uint32_t last_cs_tick = 0;
 
     while (1) {
         USB_CDC_Task();
         TMC2209_Status st = TMC2209_Poll();
 
         if (USB_CDC_IsConnected()) {
+            if (continuous_cs) {
+                uint32_t now = HAL_GetTick();
+                if ((uint32_t)(now - last_cs_tick) >= CS_INTERVAL_MS) {
+                    last_cs_tick = now;
+                    uint8_t cs[10];
+                    for (int i = 0; i < 10; i++) {
+                        uint32_t drv = TMC2209_ReadDrvStatus();
+                        cs[i] = (uint8_t)((drv >> 16) & 0x1FU);
+                    }
+                    snprintf(rsp, sizeof(rsp), "cs:%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
+                             cs[0], cs[1], cs[2], cs[3], cs[4], cs[5], cs[6], cs[7], cs[8], cs[9]);
+                    tx(rsp);
+                }
+            }
             if (!greeted) {
                 tx("TMC2209 ready. h for help\r\n");
                 greeted = 1;
@@ -243,6 +265,7 @@ int main(void)
             process_cmd();
         } else {
             greeted = reported = 0;
+            continuous_cs = 0;
         }
     }
 }

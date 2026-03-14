@@ -12,6 +12,7 @@
 /* ---- Register addresses ---- */
 #define TMC_REG_GCONF       0x00U
 #define TMC_REG_GSTAT       0x01U
+#define TMC_REG_SLAVECONF   0x03U
 #define TMC_REG_IFCNT       0x02U
 #define TMC_REG_IOIN        0x06U
 #define TMC_REG_IHOLD_IRUN  0x10U
@@ -20,13 +21,9 @@
 #define TMC_REG_VACTUAL     0x22U
 #define TMC_REG_SGTHRS      0x40U
 #define TMC_REG_SG_RESULT   0x41U
-#define TMC_REG_TSTEP       0x12U
 #define TMC_REG_CHOPCONF    0x6CU
 #define TMC_REG_DRV_STATUS  0x6FU
 #define TMC_REG_PWMCONF     0x70U
-#define TMC_REG_PWM_SCALE   0x71U
-#define TMC_REG_MSCNT       0x6AU
-#define TMC_REG_MSCURACT    0x6BU
 
 /* ---- Bit-field helpers ---- */
 #define GCONF_PDN_DISABLE       (1U << 6)
@@ -53,6 +50,12 @@ static UART_HandleTypeDef huart_tmc;
 static TIM_HandleTypeDef  htim_step;
 static TMC2209_Mode       s_mode = TMC_MODE_UART;
 static uint8_t            s_tim_running;
+static void (*s_debug_print)(const char *str);
+
+void TMC2209_SetDebugPrint(void (*fn)(const char *str))
+{
+    s_debug_print = fn;
+}
 
 /* ---- DWT cycle counter ---- */
 
@@ -108,15 +111,18 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
     __HAL_RCC_USART2_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
+    /* Half-duplex single-wire: open-drain TX (release bus for TMC reply) */
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin       = TMC2209_UART_TX_PIN;
-    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Mode      = GPIO_MODE_AF_OD;
     gpio.Pull      = GPIO_PULLUP;
     gpio.Speed     = GPIO_SPEED_FREQ_HIGH;
     gpio.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
 
     gpio.Pin       = TMC2209_UART_RX_PIN;
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_PULLUP;
     gpio.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
 
@@ -140,15 +146,22 @@ static uint8_t tmc_write(uint8_t reg, uint32_t val)
     uint8_t buf[8] = { TMC_SYNC, TMC2209_UART_ADDR, reg | TMC_WRITE_BIT,
                        val >> 24, val >> 16, val >> 8, val, 0 };
     tmc_crc(buf, 8);
-    return (HAL_UART_Transmit(&huart_tmc, buf, 8, 20) == HAL_OK) ? 1 : 0;
+    HAL_HalfDuplex_EnableTransmitter(&huart_tmc);
+    HAL_StatusTypeDef st = HAL_UART_Transmit(&huart_tmc, buf, 8, 20);
+    HAL_HalfDuplex_EnableReceiver(&huart_tmc);
+    return (st == HAL_OK) ? 1 : 0;
 }
 
 static uint8_t tmc_read(uint8_t reg, uint32_t *out)
 {
     uint8_t req[4] = { TMC_SYNC, TMC2209_UART_ADDR, reg, 0 };
     tmc_crc(req, 4);
-    if (HAL_UART_Transmit(&huart_tmc, req, 4, 20) != HAL_OK)
+    HAL_HalfDuplex_EnableTransmitter(&huart_tmc);
+    if (HAL_UART_Transmit(&huart_tmc, req, 4, 20) != HAL_OK) {
+        HAL_HalfDuplex_EnableReceiver(&huart_tmc);
         return 0;
+    }
+    HAL_HalfDuplex_EnableReceiver(&huart_tmc);
 
     uint32_t t0 = DWT->CYCCNT;
     while ((DWT->CYCCNT - t0) < DWT_CYCLES(TMC_SENDDELAY_US)) {}
@@ -157,7 +170,7 @@ static uint8_t tmc_read(uint8_t reg, uint32_t *out)
     if (HAL_UART_Receive(&huart_tmc, rsp, 8, 20) != HAL_OK)
         return 0;
 
-    if (rsp[0] != TMC_SYNC || rsp[2] != reg)
+    if (rsp[0] != TMC_SYNC || rsp[1] != 0xFF || rsp[2] != reg)
         return 0;
 
     uint8_t crc = rsp[7];
@@ -253,9 +266,11 @@ static void step_pwm_stop(void)
 
 /* ---- Non-blocking init state machine ---- */
 
+#define SLAVECONF_SENDDELAY(n) ((uint32_t)((n) & 0x0FU) << 0)
+
 typedef enum {
     TI_DWT, TI_GPIO, TI_UART, TI_TIM, TI_POWERUP,
-    TI_GCONF, TI_IHOLD_IRUN, TI_TPWMTHRS,
+    TI_GCONF, TI_IHOLD_IRUN, TI_TPWMTHRS, TI_SLAVECONF,
     TI_CHOP_RD, TI_CHOP_WR,
     TI_PWMCONF, TI_ENABLE,
     TI_DONE, TI_ERR
@@ -314,7 +329,7 @@ TMC2209_Status TMC2209_Poll(void)
         huart_tmc.Init.Mode         = UART_MODE_TX_RX;
         huart_tmc.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
         huart_tmc.Init.OverSampling = UART_OVERSAMPLING_16;
-        HAL_UART_Init(&huart_tmc);
+        HAL_HalfDuplex_Init(&huart_tmc);
         s_ti = TI_TIM;
         break;
 
@@ -330,6 +345,8 @@ TMC2209_Status TMC2209_Poll(void)
         break;
 
     case TI_GCONF:
+        if (s_debug_print)
+            s_debug_print("--- TMC2209 UART init ---\r\n");
         tmc_write(TMC_REG_GCONF, GCONF_PDN_DISABLE | GCONF_MSTEP_REG_SELECT | GCONF_MULTISTEP_FILT);
         s_ti = TI_IHOLD_IRUN;
         break;
@@ -346,6 +363,11 @@ TMC2209_Status TMC2209_Poll(void)
 
     case TI_TPWMTHRS:
         tmc_write(TMC_REG_TPWMTHRS, 0);
+        s_ti = TI_SLAVECONF;
+        break;
+
+    case TI_SLAVECONF:
+        tmc_write(TMC_REG_SLAVECONF, SLAVECONF_SENDDELAY(4));
         s_ti = TI_CHOP_RD;
         break;
 

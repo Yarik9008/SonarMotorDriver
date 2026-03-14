@@ -22,10 +22,9 @@
 #define TMC2209_UART_RX_PIN     GPIO_PIN_3   /* PA3 — USART2_RX → PDN_UART (общая линия) */
 #define TMC2209_UART_ADDR       0U           /* Адрес драйвера (MS1=0, MS2=0) */
 #define TMC2209_RSENSE_OHM      0.11f        /* Резистор измерения тока, Ом */
-#define TMC2209_IRUN_MA         1000U        /* Ток при движении, мА (IRUN) 1A */
-#define TMC2209_IHOLD_MA        500U         /* Ток удержания, мА (IHOLD) 0.5A */
-#define TMC2209_MICROSTEPS      128U         /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
-#define TMC2209_USE_UART_MODE   1U           /* 1 = UART-режим (VACTUAL) по умолчанию */
+#define TMC2209_IRUN_MA         800U         /* Ток при движении, мА (IRUN) */
+#define TMC2209_IHOLD_MA        400U         /* Ток удержания, мА (IHOLD) */
+#define TMC2209_MICROSTEPS      16U          /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
 #define IRQ_PRIO_TMC_UART       6U
 
 /* -------- GPIO — TMC2209 STEP/DIR/ENN -------- */
