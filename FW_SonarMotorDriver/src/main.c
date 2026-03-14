@@ -661,9 +661,12 @@ static void BSP_Init(void)
     HAL_GPIO_Init(LED_PORT, &gpio);
     HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);
 
-    gpio.Pin = SYNC_PIN;
-    HAL_GPIO_Init(SYNC_PORT, &gpio);
-    HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
+    gpio.Pin = SYNC_OUT_PIN; gpio.Mode = GPIO_MODE_OUTPUT_PP; gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(SYNC_OUT_PORT, &gpio);
+    HAL_GPIO_WritePin(SYNC_OUT_PORT, SYNC_OUT_PIN, GPIO_PIN_RESET);
+
+    gpio.Pin = SYNC_IN_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(SYNC_IN_PORT, &gpio);
 }
 
 static void PollTimer_Init(void)

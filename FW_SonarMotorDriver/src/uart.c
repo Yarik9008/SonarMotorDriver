@@ -1,19 +1,20 @@
-/* uart.c — UART (USART1, PA9 TX / PA10 RX) через DMA. */
+/* uart.c — UART (USART3, PB10 TX / PB11 RX) через прерывания.
+ * PA9/PA10 зарезервированы для UART bootloader. */
 
 #include "uart.h"
 #include "board.h"
 #include "tmc2209.h"
 
 static UART_HandleTypeDef huart;
-static DMA_HandleTypeDef  hdma_tx;
-static DMA_HandleTypeDef  hdma_rx;
 
 static uint8_t  rx_buf[UART_RX_RING_SIZE];
+static volatile uint16_t rx_head = 0;
 static uint16_t rx_tail = 0;
+static uint8_t  rx_byte;   /* Буфер для приёма по 1 байту */
 
 static uint16_t rx_get_head(void)
 {
-    return UART_RX_RING_SIZE - __HAL_DMA_GET_COUNTER(huart.hdmarx);
+    return rx_head;
 }
 
 static uint8_t  tx_ring[UART_TX_RING_SIZE];
@@ -32,6 +33,11 @@ static uint16_t tx_free(void)
     return (UART_TX_RING_SIZE - 1U) - tx_count();
 }
 
+static void uart_rx_restart(void)
+{
+    HAL_UART_Receive_IT(&huart, &rx_byte, 1);
+}
+
 void UART_Init(void)
 {
     huart.Instance          = UART_INSTANCE;
@@ -43,7 +49,7 @@ void UART_Init(void)
     huart.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
     huart.Init.OverSampling = UART_OVERSAMPLING_16;
     HAL_UART_Init(&huart);
-    HAL_UART_Receive_DMA(&huart, rx_buf, UART_RX_RING_SIZE);
+    uart_rx_restart();
 }
 
 /* --- HAL MSP --- */
@@ -65,8 +71,8 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
     }
     if (h->Instance != UART_INSTANCE) return;
 
-    __HAL_RCC_USART1_CLK_ENABLE();
-    __HAL_RCC_DMA1_CLK_ENABLE();
+    __HAL_RCC_USART3_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin = UART_TX_PIN; gpio.Mode = GPIO_MODE_AF_PP; gpio.Speed = GPIO_SPEED_FREQ_HIGH;
@@ -74,55 +80,23 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
     gpio.Pin = UART_RX_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(UART_RX_PORT, &gpio);
 
-    hdma_tx.Instance = DMA1_Channel4;
-    hdma_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
-    hdma_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
-    hdma_tx.Init.MemInc              = DMA_MINC_ENABLE;
-    hdma_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-    hdma_tx.Init.Mode                = DMA_NORMAL;
-    hdma_tx.Init.Priority            = DMA_PRIORITY_LOW;
-    HAL_DMA_Init(&hdma_tx);
-    __HAL_LINKDMA(h, hdmatx, hdma_tx);
-
-    hdma_rx.Instance = DMA1_Channel5;
-    hdma_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
-    hdma_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
-    hdma_rx.Init.MemInc              = DMA_MINC_ENABLE;
-    hdma_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-    hdma_rx.Init.Mode                = DMA_CIRCULAR;
-    hdma_rx.Init.Priority            = DMA_PRIORITY_LOW;
-    HAL_DMA_Init(&hdma_rx);
-    __HAL_LINKDMA(h, hdmarx, hdma_rx);
-
-    HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
-    HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
-    HAL_NVIC_SetPriority(USART1_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(USART1_IRQn);
+    HAL_NVIC_SetPriority(USART3_IRQn, IRQ_PRIO_UART, 0);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
 }
 
 void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
 {
     if (h->Instance != UART_INSTANCE) return;
-    __HAL_RCC_USART1_CLK_DISABLE();
+    __HAL_RCC_USART3_CLK_DISABLE();
     HAL_GPIO_DeInit(UART_TX_PORT, UART_TX_PIN);
     HAL_GPIO_DeInit(UART_RX_PORT, UART_RX_PIN);
-    HAL_DMA_DeInit(h->hdmatx);
-    HAL_DMA_DeInit(h->hdmarx);
-    HAL_NVIC_DisableIRQ(DMA1_Channel4_IRQn);
-    HAL_NVIC_DisableIRQ(DMA1_Channel5_IRQn);
-    HAL_NVIC_DisableIRQ(USART1_IRQn);
+    HAL_NVIC_DisableIRQ(USART3_IRQn);
 }
 
 /* --- IRQ --- */
 
-void DMA1_Channel4_IRQHandler(void) { HAL_DMA_IRQHandler(&hdma_tx); }
-void DMA1_Channel5_IRQHandler(void) { HAL_DMA_IRQHandler(&hdma_rx); }
-void USART1_IRQHandler(void)        { HAL_UART_IRQHandler(&huart);  }
-void USART2_IRQHandler(void)        { TMC2209_UartIrqHandler();     }
+void USART3_IRQHandler(void) { HAL_UART_IRQHandler(&huart); }
+void USART2_IRQHandler(void) { TMC2209_UartIrqHandler();     }
 
 /* --- HAL колбэки --- */
 
@@ -137,11 +111,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
 {
     if (h->Instance == TMC2209_UART) TMC2209_UartRxCpltCb(h);
+    if (h->Instance != UART_INSTANCE) return;
+    uint16_t next = (rx_head + 1) % UART_RX_RING_SIZE;
+    if (next != rx_tail) {
+        rx_buf[rx_head] = rx_byte;
+        rx_head = next;
+    }
+    uart_rx_restart();
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *h)
 {
     if (h->Instance == TMC2209_UART) TMC2209_UartErrorCb(h);
+    if (h->Instance == UART_INSTANCE) uart_rx_restart();
 }
 
 /* --- API --- */
@@ -163,7 +145,7 @@ void UART_Task(void)
     if (!cnt) return;
     uint16_t chunk = (tx_tail + cnt > UART_TX_RING_SIZE) ? (UART_TX_RING_SIZE - tx_tail) : cnt;
     tx_pending = chunk;
-    HAL_UART_Transmit_DMA(&huart, &tx_ring[tx_tail], chunk);
+    HAL_UART_Transmit_IT(&huart, &tx_ring[tx_tail], chunk);
 }
 
 uint16_t UART_ReadLine(char *buf, uint16_t size)

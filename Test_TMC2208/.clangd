@@ -1,0 +1,13 @@
+CompileFlags:
+  Add:
+    - -I.
+    - -Iinclude
+    - -IC:/Users/Yarik/YandexDisk/URC RGO/SonarMotorDriver/Test_TMC2208/include
+    - -IC:/Users/Yarik/.platformio/packages/framework-stm32cubef4/Drivers/STM32F4xx_HAL_Driver/Inc
+    - -IC:/Users/Yarik/.platformio/packages/framework-stm32cubef4/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+    - -IC:/Users/Yarik/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Device/ST/STM32F4xx/Include
+    - -IC:/Users/Yarik/.platformio/packages/framework-stm32cubef4/Drivers/CMSIS/Include
+    - -IC:/Users/Yarik/.platformio/packages/framework-stm32cubef4/Middlewares/ST/STM32_USB_Device_Library/Core/Inc
+    - -DSTM32F446xx
+    - -DUSE_HAL_DRIVER
+    - -DUSE_USB_OTG_FS

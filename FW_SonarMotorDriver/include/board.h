@@ -21,9 +21,14 @@
 #define LED_PIN                 GPIO_PIN_13
 #define LED_TOGGLE_INTERVAL     (POLL_FREQ_HZ / 2U)  /* Heartbeat ~1 Гц */
 
-/* -------- SYNC — пин синхронизатор (при достижении позиции / scan) -------- */
-#define SYNC_PORT               GPIOA
-#define SYNC_PIN                GPIO_PIN_1   /* PA1 — свободен */
+/* -------- SYNC — SYNC_OUT / SYNC_IN (рядом с USART3 PB10/PB11) -------- */
+#define SYNC_OUT_PORT           GPIOB
+#define SYNC_OUT_PIN            GPIO_PIN_9   /* PB9 — SYNC_OUT (HIGH=позиция достигнута) */
+#define SYNC_IN_PORT            GPIOB
+#define SYNC_IN_PIN             GPIO_PIN_12  /* PB12 — SYNC_IN (внешний триггер) */
+/* Обратная совместимость */
+#define SYNC_PORT               SYNC_OUT_PORT
+#define SYNC_PIN                SYNC_OUT_PIN
 
 /* -------- SPI1 + THVD1452 — энкодер LENZ IRS (BiSS C) -------- */
 #define ENCODER_RESOLUTION_BITS 17U     /* 17 для IRS-I34/I50/I60; 18 для I70/I80/I90 */
@@ -72,13 +77,16 @@
 #define PID_KD_DEFAULT          0.0f
 #define PID_DEADBAND_DEG        0.1f   /* >= ENCODER_ACCURACY_DEG, иначе дребезг */
 
-/* -------- USART1 — UART (PA9 TX / PA10 RX, DMA) -------- */
-#define UART_INSTANCE           USART1
+/* -------- PA9 / PA10 — зарезервированы для UART bootloader (прошивка) -------- */
+/* Не использовать в приложении. Подключить к разъёму J2: Pin 3 (UART_RX) ← PA9, Pin 4 (UART_TX) → PA10 */
+
+/* -------- USART3 — UART команд и телеметрии (PB10 TX / PB11 RX, IT) -------- */
+#define UART_INSTANCE           USART3
 #define UART_BAUDRATE           115200U
-#define UART_TX_PORT            GPIOA
-#define UART_TX_PIN             GPIO_PIN_9
-#define UART_RX_PORT            GPIOA
-#define UART_RX_PIN             GPIO_PIN_10
+#define UART_TX_PORT            GPIOB
+#define UART_TX_PIN             GPIO_PIN_10   /* PB10 — USART3_TX → ПК / внешний MCU */
+#define UART_RX_PORT            GPIOB
+#define UART_RX_PIN             GPIO_PIN_11   /* PB11 — USART3_RX ← ПК / внешний MCU */
 #define UART_TX_RING_SIZE       512U
 #define UART_RX_RING_SIZE       128U
 

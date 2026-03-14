@@ -10,7 +10,6 @@
 
 - [Архитектура](#архитектура)
 - [Аппаратная часть](#аппаратная-часть)
-- [Обвязка THVD1452](#обвязка-thvd1452-rs-485)
 - [Структура проекта](#структура-проекта)
 - [Сборка и прошивка](#сборка-и-прошивка)
 - [Использование](#использование)
@@ -41,9 +40,9 @@
 
  ┌──────┐  USB CDC  ┌──────────┐
  │  ПК  │◄─────────►│   Cmd    ├──► en / dis / t= / t=± / kp= / ki= / kd= / op= / scan= / stop
- │      │  UART1    │  Parser  │
+ │      │  USART3   │  Parser  │
  │      │◄─────────►│          │
- └──────┘ PA9/PA10  └──────────┘
+ └──────┘ PB10/PB11 └──────────┘
  ПК ◄── Телеметрия (USB TX + UART TX): debug=0 → cp,ec; debug=1 → cp,tp,pe,u,m,ec,kp,ki,kd
 ```
 
@@ -68,18 +67,18 @@
 3. **Encoder_Accumulate** — многооборотная позиция с обработкой перехлёста.
 4. **Mode_Update** — счётчик сбоев: ≥500 мс без ответа → ol; при ответе → cl.
 5. **MotorControl_Tick** — CL: PID → шаги; OL: прямое позиционирование.
-6. **Scan_Tick** — сканирование сектора (zigzag start↔end или бесконечное в одном направлении, до команды stop); пин синхронизатора PA1.
+6. **Scan_Tick** — сканирование сектора (zigzag start↔end или бесконечное в одном направлении, до команды stop); пин синхронизатора PB9 (SYNC_OUT).
 7. **Telemetry_Tick** — периодический вывод (250 Гц по умолчанию): debug=0 → cp,ec; debug=1 → полная.
 8. **Heartbeat_Tick** — мигание LED ~1 Гц.
 
 ### Приоритеты прерываний
 
 
-| Приоритет | Источник     | Назначение                 |
-| --------- | ------------ | -------------------------- |
-| 4         | DMA1_Ch2/Ch3 | SPI1 RX/TX для BiSS C      |
-| 5         | USB LP       | Обработка USB-пакетов      |
-| 6         | USART1       | UART TX/RX (команды, тел.) |
+| Приоритет | Источник     | Назначение                        |
+| --------- | ------------ | --------------------------------- |
+| 4         | DMA1_Ch2/Ch3 | SPI1 RX/TX для BiSS C             |
+| 5         | USB LP       | Обработка USB-пакетов             |
+| 6         | USART3       | UART TX/RX (команды, тел.)        |
 | 15        | SysTick      | HAL_GetTick() (для таймаутов HAL) |
 
 
@@ -94,19 +93,22 @@
 | ----- | ------------- | --------------------------------------------------------- |
 | PA5   | SPI1_SCK      | MA → THVD1452 D                                           |
 | PA6   | SPI1_MISO     | SLO ← THVD1452 R                                          |
-| PA9   | USART1_TX     | UART TX (дублирование USB CDC)                            |
-| PA10  | USART1_RX     | UART RX (дублирование USB CDC)                            |
+| PA9   | —             | **Зарезервировано** для UART bootloader (прошивка)        |
+| PA10  | —             | **Зарезервировано** для UART bootloader (прошивка)        |
+| PB10  | USART3_TX     | UART TX (команды, телеметрия)                             |
+| PB11  | USART3_RX     | UART RX (команды)                                         |
 | PA11  | USB_DM        | USB Data Minus                                            |
 | PA12  | USB_DP        | USB Data Plus                                             |
 | PB0   | GPIO_OUT (DE) | Driver Enable THVD1452 (active HIGH)                      |
 | PB1   | GPIO_OUT (RE) | Receiver Enable THVD1452 (active LOW)                     |
-| PA2   | USART2_TX     | UART TMC2209 → PDN_UART (через 1 кОм)                      |
-| PA3   | USART2_RX     | UART TMC2209 ← PDN_UART (общая линия)                      |
+| PA2   | USART2_TX     | UART TMC2209 → PDN_UART (через 1 кОм)                     |
+| PA3   | USART2_RX     | UART TMC2209 ← PDN_UART (общая линия)                     |
 | PB6   | GPIO_OUT      | ENN TMC2209 (LOW = вкл)                                   |
 | PB7   | GPIO_OUT      | DIR TMC2209                                               |
 | PB8   | TIM4_CH3 AF   | STEP TMC2209 (PWM)                                        |
 | PA7   | GPIO_IN       | DIAG TMC2209 (StallGuard, Open Load; HIGH = ошибка)       |
-| PA1   | GPIO_OUT      | Пин синхронизатор (HIGH=позиция достигнута, LOW=движение) |
+| PB9   | GPIO_OUT      | SYNC_OUT (HIGH=позиция достигнута, LOW=движение)         |
+| PB12  | GPIO_IN       | SYNC_IN (внешний триггер синхронизации)                 |
 | PC13  | GPIO_OUT      | LED heartbeat (~1 Гц)                                     |
 
 
@@ -131,24 +133,13 @@
     │   ├── PA3 ◄──│ PDN_UART │ (UART RX, общая линия)
     │   └── PA7 ◄──│ DIAG     │ (StallGuard, Open Load)
     │              └──────────┘
-    ├── PA9  ──►  UART TX ──► ПК / внешний MCU (115200 8N1)
-    ├── PA10 ◄──  UART RX ◄── ПК / внешний MCU
+    ├── PB9  ──►  SYNC_OUT (позиция достигнута)
+    ├── PB10 ──►  UART TX ──► ПК / внешний MCU (115200 8N1)
+    ├── PB11 ◄──  UART RX ◄── ПК / внешний MCU
+    ├── PB12 ◄──  SYNC_IN (внешний триггер)
     ├── PA11 ──┐
     └── PA12 ──┼── USB → ПК (COM-порт)
 ```
-
-### Обвязка THVD1452 (RS-485)
-
-**Обязательно:**
-- **100 nF** — керамический конденсатор между VCC и GND, максимально близко к выводам питания.
-- **RT = 120 Ω** — терминатор на каждом конце линии (витая пара MA/SLO).
-
-**Рекомендуется (промышленная среда):**
-- **R1, R2 = 10 Ω** — импульсные резисторы в линиях A и B.
-- **TVS** — двунаправленный TVS-диод 400 W (например, Bourns CDSOT23-SM712).
-- **1–10 kΩ** — pull-up/pull-down на DE и RE для снижения помех.
-
-Внутренний failsafe и pull-down/pull-up на DE/RE — встроены, внешние bias-резисторы не требуются.
 
 ### Выводы энкодера
 
@@ -183,16 +174,16 @@
 Источник: HSI
 
 
-| Домен     | Частота            |
-| --------- | ------------------ |
-| SYSCLK    | 48 МГц             |
-| APB1      | 24 МГц             |
-| APB2      | 48 МГц             |
-| USB       | 48 МГц             |
-| SPI1 (MA) | 0.75 МГц (APB2/64) |
-| TIM2      | 48 МГц (APB1 × 2)  |
-| DWT CYCCNT| 48 МГц (SYSCLK)     | Задержки Delay_ms/Delay_us |
-| TIM4      | 48 МГц (APB1 × 2)  |
+| Домен      | Частота            |
+| ---------- | ------------------ |
+| SYSCLK     | 48 МГц             |
+| APB1       | 24 МГц             |
+| APB2       | 48 МГц             |
+| USB        | 48 МГц             |
+| SPI1 (MA)  | 0.75 МГц (APB2/64) |
+| TIM2       | 48 МГц (APB1 × 2)  |
+| DWT CYCCNT | 48 МГц (SYSCLK)    |
+| TIM4       | 48 МГц (APB1 × 2)  |
 
 
 ### USB на Blue Pill
@@ -216,7 +207,7 @@ FW_SonarMotorDriver/
 │   ├── usbd_desc.h          — USB дескрипторы
 │   ├── stepper.h            — STEP/DIR/ENABLE
 │   ├── pid.h                — PID-регулятор
-│   ├── uart.h               — UART (USART1) API
+│   ├── uart.h               — UART (USART3) API
 │   └── cmd_parser.h         — парсер команд en/dis/t/t±/kp/ki/kd/op/debug/scan/stop
 ├── src/
 │   ├── main.c               — init, главный цикл, контроллер, телеметрия
@@ -224,7 +215,7 @@ FW_SonarMotorDriver/
 │   ├── stepper.c            — TIM4 PWM генерация импульсов STEP
 │   ├── pid.c                — PID с anti-windup
 │   ├── cmd_parser.c         — парсер команд (USB + UART)
-│   ├── uart.c               — UART (USART1): кольцевые буферы, TX/RX по прерываниям
+│   ├── uart.c               — UART (USART3): кольцевые буферы, TX/RX по прерываниям
 │   ├── usb_cdc.c            — USB CDC, кольцевые буферы, readline
 │   ├── usbd_conf.c          — низкоуровневая привязка USB к STM32
 │   └── usbd_desc.c          — USB дескрипторы устройства
@@ -233,17 +224,17 @@ FW_SonarMotorDriver/
 ```
 
 
-| Модуль       | Содержание                                                                |
-| ------------ | ------------------------------------------------------------------------- |
-| `board.h`    | Константы: выводы, TMC2209_MICROSTEPS (32), PID, буферы                   |
+| Модуль       | Содержание                                                                                    |
+| ------------ | --------------------------------------------------------------------------------------------- |
+| `board.h`    | Константы: выводы, TMC2209_MICROSTEPS (32), PID, буферы                                       |
 | `main.c`     | BSP, clock, TIM2, DWT, неблокирующая init-стейт-машина, CL/OL контроллер, команды, телеметрия |
-| `biss_c`     | BiSS C: SPI + DMA, разбор кадра, CRC6                                     |
-| `stepper`    | TIM4 PWM: STEP/DIR/ENABLE для TMC2209                                     |
-| `tmc2209`    | UART: неблокирующая стейт-машина настройки IRUN, IHOLD, микрошаг           |
-| `pid`        | PID с anti-windup и ограничением выхода                                   |
-| `cmd_parser` | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop) |
-| `uart`       | UART (USART1): кольцевые буферы TX/RX, readline                           |
-| `usb_cdc`    | USB CDC: кольцевые буферы TX/RX, readline, DFU reboot                     |
+| `biss_c`     | BiSS C: SPI + DMA, разбор кадра, CRC6                                                         |
+| `stepper`    | TIM4 PWM: STEP/DIR/ENABLE для TMC2209                                                         |
+| `tmc2209`    | UART: неблокирующая стейт-машина настройки IRUN, IHOLD, микрошаг                              |
+| `pid`        | PID с anti-windup и ограничением выхода                                                       |
+| `cmd_parser` | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop)                     |
+| `uart`       | UART (USART3): кольцевые буферы TX/RX, readline                                               |
+| `usb_cdc`    | USB CDC: кольцевые буферы TX/RX, readline, DFU reboot                                         |
 
 
 ---
@@ -269,7 +260,8 @@ pio run --target upload   # Прошивка
 2. TMC2209: STEP→PB8, DIR→PB7, ENN→PB6, PDN_UART↔PA2/PA3 (UART TX/RX), DIAG→PA7.
 3. Питание энкодера 5–12 В, питание драйвера.
 4. USB → ПК, открыть COM-порт.
-5. UART: PA9 (TX) / PA10 (RX).
+5. UART команд и телеметрии: PB10 (TX) / PB11 (RX) → ПК или внешний MCU.
+6. **UART bootloader** (прошивка): PA9 (TX) / PA10 (RX) — подключить к разъёму J2, Pin 3 (UART_RX) ← PA9, Pin 4 (UART_TX) → PA10. BOOT0=1 при сбросе для входа в bootloader.
 
 Команды и телеметрия дублируются на оба интерфейса (USB CDC и UART).
 
@@ -379,7 +371,7 @@ if (g_scan_delay_cnt < g_scan_delay_ms) return;  // ждём дальше
 
 Таким образом, `delay=10` означает 10 мс, `delay=50` — 50 мс. Точность привязки к SysTick: ±1 мс.
 
-**Пин синхронизатор (PA1)** — выход для синхронизации с внешним оборудованием:
+**SYNC_OUT (PB9)** — выход для синхронизации с внешним оборудованием:
 
 
 | Уровень  | Момент                                                           |
@@ -388,7 +380,7 @@ if (g_scan_delay_cnt < g_scan_delay_ms) return;  // ждём дальше
 | **HIGH** | Целевая позиция достигнута (мотор в deadband, ошибка менее 0.1°) |
 
 
-Типичное применение: подключить PA1 к триггеру сонара/камеры — HIGH означает «позиция достигнута, можно делать замер».
+Типичное применение: подключить PB9 к триггеру сонара/камеры — HIGH означает «позиция достигнута, можно делать замер». **SYNC_IN (PB12)** — вход для внешнего триггера синхронизации.
 
 **Примеры:**
 
@@ -492,8 +484,10 @@ cp:90.12,tp:180.00,pe:89.88,u:0.0000,m:ol,ec:2,kp:0.0100,ki:0.0000,kd:0.0000
 #define OUTPUT_PERIOD_MS_DEFAULT 4U     // Период телеметрии (мс), 0 = выкл; 4 мс = 250 Гц
 #define TELEMETRY_DEBUG_DEFAULT 0        // 0 = cp,ec; 1 = полная телеметрия
 #define STARTUP_TARGET_OFFSET_DEG 0.0f   // Офсет от 0° при старте; 0 = домашняя позиция
-#define SYNC_PORT               GPIOA   // Пин синхронизатор (при достижении позиции / scan)
-#define SYNC_PIN                 GPIO_PIN_1  // PA1
+#define SYNC_OUT_PORT           GPIOB   // SYNC_OUT (PB9)
+#define SYNC_OUT_PIN            GPIO_PIN_9
+#define SYNC_IN_PORT            GPIOB   // SYNC_IN (PB12)
+#define SYNC_IN_PIN             GPIO_PIN_12
 ```
 
 При старте: мотор **включён по умолчанию** — драйвер активируется при первом ответе энкодера, после чего мотор движется в домашнюю позицию (0° + офсет) кратчайшим путём. Команда `en` нужна только после `dis`.
