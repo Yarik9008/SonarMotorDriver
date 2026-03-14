@@ -6,6 +6,10 @@
 		{
 			"name": "FW_SonarMotorDriver",
 			"path": "FW_SonarMotorDriver"
+		},
+		{
+			"name": "Test_TMC2209",
+			"path": "Test_TMC2209"
 		}
 	],
 	"settings": {}
