@@ -74,12 +74,13 @@
 ### Приоритеты прерываний
 
 
-| Приоритет | Источник     | Назначение                        |
-| --------- | ------------ | --------------------------------- |
-| 4         | DMA1_Ch2/Ch3 | SPI1 RX/TX для BiSS C             |
-| 5         | USB LP       | Обработка USB-пакетов             |
-| 6         | USART1       | UART TX/RX (команды, тел.)        |
-| 15        | SysTick      | HAL_GetTick() (для таймаутов HAL) |
+| Приоритет | Источник      | Назначение                        |
+| --------- | ------------- | --------------------------------- |
+| 4         | DMA1_Ch2/Ch3  | SPI1 RX/TX для BiSS C             |
+| 5         | USB LP        | Обработка USB-пакетов             |
+| 6         | USART1        | IDLE line detection (cmd UART)    |
+| 6         | DMA1_Ch4/Ch5  | UART TX/RX DMA (команды, тел.)    |
+| 15        | SysTick       | HAL_GetTick() (для таймаутов HAL) |
 
 
 ---
@@ -191,16 +192,17 @@
 
 ---
 
-## Motor-driver слой
+## Motor Facade слой
 
-Проект использует **единый motor-driver слой** (`motor_driver.c/.h`), который объединяет:
+Проект использует **единый app-level facade** (`tmc2209.c/.h`), который объединяет:
 
 - **lib/tmc2209** — core library для TMC2209 (регистры, UART, конфиг, диагностика)
-- **STEP/DIR backend** — генерация импульсов через TIM4 PWM (встроена в motor_driver)
+- **STEP/DIR backend** — генерация импульсов через TIM4 PWM. **Continuous timer model**: таймер запускается один раз при начале движения и работает непрерывно; ARR/CCR обновляются на лету без stop/start.
 - **UART motion backend** — управление через VACTUAL (internal pulse generator TMC2209)
-- **ENN** — единственный владелец пина enable (через tmc2209 enable/disable)
+- **ENN** — единственный владелец пина enable (через lib/tmc2209)
+- **TMC2209_Task()** — неблокирующий периодический опрос DRV_STATUS каждые 500 мс. Вызывается из main loop. Кэш доступен через `TMC2209_GetCachedDrvStatus()`.
 
-Приложение работает только с high-level API: `MotorDriver_Init()`, `MotorDriver_SetEnabled()`, `MotorDriver_MoveSteps()`, `MotorDriver_Stop()` и т.д. Детали UART/TIM/GPIO скрыты.
+Приложение работает только с high-level API: `TMC2209_Init()`, `TMC2209_SetEnabled()`, `TMC2209_MoveSteps()`, `TMC2209_Stop()` и т.д. Детали UART/TIM/GPIO скрыты.
 
 ### Режимы управления двигателем (board.h: MOTOR_DRIVER_MODE)
 
@@ -219,18 +221,18 @@
 
 ### Инициализация
 
-Один шаг `MotorDriver_Init()` заменяет прежние `Stepper_Init()`, `TMC2209_InitStart()`, `TMC2209_Poll()`. Внутри:
+Один шаг `TMC2209_Init()` заменяет старые подходы. Внутри:
 
-1. Инициализация UART к TMC2209 (USART2)
+1. Инициализация UART к TMC2209 (USART2, blocking)
 2. Инициализация lib/tmc2209 (конфиг, проверка связи)
-3. STEP/DIR backend (если режим STEP_DIR): GPIO STEP/DIR, TIM4 PWM
+3. STEP/DIR backend (если режим STEP_DIR): GPIO STEP/DIR, TIM4 PWM с preload
 4. Приведение ENN в консистентное состояние (disabled)
 
 ### Удалённые элементы
 
-- `Stepper_*()` как public API — функциональность перенесена в motor_driver
-- `TMC2209_InitStart()` / `TMC2209_Poll()` — заменены на `MotorDriver_Init()`
-- Двойное управление ENN (stepper + tmc2209) — теперь только motor_driver
+- Отдельный `stepper.c` — функциональность перенесена внутрь фасада
+- Устаревшие `TMC2209_InitStart()` / `TMC2209_Poll()` — заменены на единый `TMC2209_Init()`
+- Двойное управление ENN — теперь только через `TMC2209_SetEnabled()`
 
 ---
 
@@ -242,7 +244,7 @@ FW_SonarMotorDriver/
 ├── include/
 │   ├── board.h              — выводы, MOTOR_DRIVER_MODE, TMC2209_MICROSTEPS, PID
 │   ├── stm32f1xx_hal_conf.h — конфигурация HAL
-│   ├── motor_driver.h       — единый API управления двигателем
+│   ├── tmc2209.h            — единый API управления двигателем (app-level facade)
 │   ├── biss_c.h             — BiSS C интерфейс
 │   ├── usb_cdc.h            — USB CDC API
 │   ├── usbd_conf.h          — USB Device Library конфиг
@@ -252,7 +254,7 @@ FW_SonarMotorDriver/
 │   └── cmd_parser.h         — парсер команд en/dis/t/t±/kp/ki/kd/op/debug/scan/stop
 ├── src/
 │   ├── main.c               — init, главный цикл, контроллер, телеметрия
-│   ├── motor_driver.c       — TMC2209 + STEP/DIR + UART motion, единый владелец ENN
+│   ├── tmc2209.c            — TMC2209 + STEP/DIR + UART motion, единый владелец ENN
 │   ├── tmc2209_port_stm32_hal.c — transport/port для UART и GPIO ENN
 │   ├── biss_c.c             — BiSS C: SPI + DMA, CRC6, разбор кадра
 │   ├── pid.c                — PID с anti-windup
@@ -271,14 +273,14 @@ FW_SonarMotorDriver/
 | Модуль           | Содержание                                                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------- |
 | `board.h`        | Константы: выводы, MOTOR_DRIVER_MODE, TMC2209_MICROSTEPS (32), PID, буферы                        |
-| `main.c`         | BSP, clock, TIM2, DWT, init, CL/OL контроллер, команды, телеметрия. Вызывает только MotorDriver_* |
-| `motor_driver`   | TMC2209 init/config, STEP/DIR (TIM4), UART motion (VACTUAL), ENN, high-level API                  |
+| `main.c`         | BSP, clock, TIM2, DWT, init, CL/OL контроллер, команды, телеметрия. Вызывает только TMC2209_* |
+| `tmc2209`        | TMC2209 app-level facade: init/config, STEP/DIR (TIM4), UART motion (VACTUAL), ENN |
 | `tmc2209_port_`* | UART и GPIO ENN для lib/tmc2209                                                                   |
 | `lib/tmc2209`    | Core library: регистры, UART, enable, VACTUAL, диагностика (без таймера/STEP)                     |
 | `biss_c`         | BiSS C: SPI + DMA, разбор кадра, CRC6                                                             |
 | `pid`            | PID с anti-windup и ограничением выхода                                                           |
 | `cmd_parser`     | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop)                         |
-| `uart`           | UART (USART1 PA9/PA10): кольцевые буферы TX/RX, readline. Не содержит логику моторного управления. |
+| `uart`           | UART (USART1 PA9/PA10): **DMA circular RX + IDLE**, **DMA TX**. Не содержит логику моторного управления. |
 | `usb_cdc`        | USB CDC: кольцевые буферы TX/RX, readline, DFU reboot                                             |
 
 
@@ -572,18 +574,18 @@ BiSS_StartRead();                           // Неблокирующее (DMA)
 if (BiSS_IsReady()) st = BiSS_GetResult(&rd);  // rd.position, rd.angle_deg
 ```
 
-### MotorDriver (единый API управления двигателем)
+### TMC2209 Facade (единый API управления двигателем)
 
 ```c
-MotorDriver_Init();
-MotorDriver_SetEnabled(1);   // Включить (ENN = LOW)
-MotorDriver_MoveSteps(10);   // 10 шагов CW
-MotorDriver_MoveSteps(-5);   // 5 шагов CCW
-MotorDriver_Stop();          // Остановить
-MotorDriver_ConfigureCurrent(800, 400);   // run_ma, hold_ma
-MotorDriver_ConfigureMicrosteps(32);
-MotorDriver_GetDrvStatus(&st);
-MotorDriver_GetVersion(&ver);
+TMC2209_Init();
+TMC2209_SetEnabled(1);   // Включить (ENN = LOW)
+TMC2209_MoveSteps(10);   // 10 шагов CW
+TMC2209_MoveSteps(-5);   // 5 шагов CCW
+TMC2209_Stop();          // Остановить
+TMC2209_SetCurrent(800, 400);   // run_ma, hold_ma
+TMC2209_SetMicrosteps(32);
+TMC2209_GetDrvStatus(&st);
+TMC2209_GetVersion(&ver);
 ```
 
 ### PID

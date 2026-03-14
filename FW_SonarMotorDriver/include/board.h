@@ -61,7 +61,7 @@
 #define ENABLE_PORT             GPIOB
 #define ENABLE_PIN              GPIO_PIN_6  /* ENN: LOW = включён, HIGH = выключен */
 
-/* -------- USART2 — UART TMC2209 (PDN_UART, single-wire half-duplex) -------- */
+/* -------- USART2 — UART TMC2209 (PDN_UART, full-duplex with 1K resistor) -------- */
 #define TMC2209_UART            USART2
 #define TMC2209_UART_BAUDRATE    115200U
 #define TMC2209_UART_TX_PORT    GPIOA
@@ -87,7 +87,7 @@
 #define PID_KD_DEFAULT          0.0f
 #define PID_DEADBAND_DEG        0.1f   /* >= ENCODER_ACCURACY_DEG, иначе дребезг */
 
-/* -------- USART1 — UART команд и телеметрии (PA9 TX / PA10 RX, IT) — взаимодействие с ПК -------- */
+/* -------- USART1 — UART команд и телеметрии (PA9 TX / PA10 RX, DMA) — взаимодействие с ПК -------- */
 #define UART_INSTANCE           USART1
 #define UART_BAUDRATE           115200U
 #define UART_TX_PORT            GPIOA
@@ -96,6 +96,8 @@
 #define UART_RX_PIN             GPIO_PIN_10   /* PA10 — USART1_RX ← ПК (разъём J2 Pin 3) */
 #define UART_TX_RING_SIZE       512U
 #define UART_RX_RING_SIZE       128U
+/* DMA буфер для UART RX (circular DMA принимает данные сюда напрямую) */
+#define UART_RX_DMA_SIZE        64U
 
 /* -------- USB CDC — виртуальный COM-порт -------- */
 #define USB_ENUM_DELAY_MS       1500U   /* Пауза для энумерации хостом */

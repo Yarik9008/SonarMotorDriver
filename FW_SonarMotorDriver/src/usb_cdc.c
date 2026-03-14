@@ -5,6 +5,7 @@
 #include "usbd_cdc.h"
 #include "usbd_desc.h"
 #include "board.h"
+#include "line_reader.h"
 
 USBD_HandleTypeDef hUsbDeviceFS;
 
@@ -165,22 +166,7 @@ uint8_t USB_CDC_IsConnected(void)
 
 uint16_t USB_CDC_ReadLine(char *buf, uint16_t size)
 {
-    if (size == 0)
-        return 0;
-
-    uint16_t len = 0;
-    uint16_t tail = rx_tail;
-    while (tail != rx_head && len < size - 1) {
-        uint8_t c = rx_ring[tail];
-        tail = (tail + 1) % USB_RX_RING_SIZE;
-        if (c == '\r' || c == '\n') {
-            rx_tail = tail;
-            buf[len] = '\0';
-            return len;
-        }
-        buf[len++] = (char)c;
-    }
-    return 0;
+    return line_reader_extract(rx_ring, USB_RX_RING_SIZE, rx_head, &rx_tail, buf, size);
 }
 
 void USB_CDC_RebootToDFU(void)

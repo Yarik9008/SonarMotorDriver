@@ -4,7 +4,7 @@
 #include "board.h"
 #include "biss_c.h"
 #include "usb_cdc.h"
-#include "motor_driver.h"
+#include "tmc2209.h"
 #include "pid.h"
 #include "cmd_parser.h"
 #include "uart.h"
@@ -126,7 +126,7 @@ static uint8_t Init_Poll(void)
         break;
 
     case INIT_MOTOR_DRIVER:
-        MotorDriver_Init();
+        TMC2209_Init();
         s_init = INIT_POLL_TIMER;
         break;
 
@@ -195,7 +195,7 @@ static int8_t    g_scan_inf      = 0;
 
 static void DoSteps(int32_t steps)
 {
-    MotorDriver_MoveSteps(steps);
+    TMC2209_MoveSteps(steps);
 }
 
 /* --- MAIN --- */
@@ -231,6 +231,7 @@ int main(void)
 
         USB_CDC_Task();
         UART_Task();
+        TMC2209_Task();
         PollCommands();
 
         if (!__HAL_TIM_GET_FLAG(&htim_poll, TIM_FLAG_UPDATE))
@@ -269,7 +270,7 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
         g_ol_pos     = pos;
         g_homing     = 1;
         g_enabled    = 1;
-        MotorDriver_SetEnabled(1);
+        TMC2209_SetEnabled(1);
         return;
     }
 
@@ -305,7 +306,7 @@ static void Mode_Update(uint8_t enc_ok)
 static void MotorControl_Tick(uint8_t enc_ok)
 {
     if (!g_enabled) {
-        MotorDriver_Stop();
+        TMC2209_Stop();
         g_last_ctrl = 0;
         return;
     }
@@ -369,7 +370,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
             }
-            MotorDriver_Stop();
+            TMC2209_Stop();
             PID_Reset(&g_pid);
             g_cl_accum = 0;
         }
@@ -404,17 +405,25 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
             }
-            MotorDriver_Stop();
+            TMC2209_Stop();
         }
     }
 }
 
 /* --- Телеметрия --- */
 
+static uint32_t g_dropped_tx = 0;
+
 static void TransmitAll(const uint8_t *buf, uint16_t len)
 {
-    if (USB_CDC_IsConnected()) USB_CDC_Transmit(buf, len);
-    UART_Transmit(buf, len);
+    if (USB_CDC_IsConnected()) {
+        if (USB_CDC_Transmit(buf, len) != 0) {
+            g_dropped_tx++;
+        }
+    }
+    if (UART_Transmit(buf, len) != 0) {
+        g_dropped_tx++;
+    }
 }
 
 static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
@@ -431,10 +440,10 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 
     if (g_telem_debug)
         len = snprintf(buf, sizeof(buf),
-            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f\r\n",
+            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f,drp:%lu\r\n",
             (double)deg, (double)g_target_deg, (double)(g_target_deg - deg),
             (double)g_last_ctrl, (g_mode == MODE_CL) ? "cl" : "ol",
-            (unsigned)ec, (double)g_pid.kp, (double)g_pid.ki, (double)g_pid.kd);
+            (unsigned)ec, (double)g_pid.kp, (double)g_pid.ki, (double)g_pid.kd, g_dropped_tx);
     else
         len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u\r\n", (double)deg, (unsigned)ec);
 
@@ -518,7 +527,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_ENABLE:
         g_enabled  = 1;
         g_cont_dir = 0;
-        MotorDriver_SetEnabled(1);
+        TMC2209_SetEnabled(1);
         PID_Reset(&g_pid);
         g_cl_accum   = 0;
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
@@ -529,8 +538,8 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_DISABLE:
         g_enabled  = 0;
         g_cont_dir = 0;
-        MotorDriver_Stop();
-        MotorDriver_SetEnabled(0);
+        TMC2209_Stop();
+        TMC2209_SetEnabled(0);
         SendResponse("ok:dis\r\n");
         break;
 
@@ -549,7 +558,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_homing   = 0;
         PID_Reset(&g_pid);
         g_cl_accum = 0;
-        if (!g_enabled) { g_enabled = 1; MotorDriver_SetEnabled(1); }
+        if (!g_enabled) { g_enabled = 1; TMC2209_SetEnabled(1); }
         SendResponse("ok:t=%c\r\n", (g_cont_dir > 0) ? '+' : '-');
         break;
 
@@ -614,7 +623,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_cont_dir = 0;
         g_scan_inf = 0;
         g_scan_st  = SCAN_IDLE;
-        MotorDriver_Stop();
+        TMC2209_Stop();
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
         PID_Reset(&g_pid);
         g_cl_accum = 0;
