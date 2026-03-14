@@ -1,9 +1,12 @@
 /* uart.c — UART (USART3, PB10 TX / PB11 RX) через прерывания.
- * PA9/PA10 зарезервированы для UART bootloader. */
+ * PA9/PA10 зарезервированы для UART bootloader.
+ *
+ * USART2 (TMC2209) настраивается здесь через HAL_UART_MspInit, но
+ * используется только библиотекой TMC2209 в blocking-режиме (без IRQ).
+ */
 
 #include "uart.h"
 #include "board.h"
-#include "tmc2209.h"
 
 static UART_HandleTypeDef huart;
 
@@ -65,8 +68,6 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
         HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
         gpio.Pin = TMC2209_UART_RX_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_NOPULL;
         HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
-        HAL_NVIC_SetPriority(USART2_IRQn, IRQ_PRIO_UART, 0);
-        HAL_NVIC_EnableIRQ(USART2_IRQn);
         return;
     }
     if (h->Instance != UART_INSTANCE) return;
@@ -86,6 +87,12 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
 
 void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
 {
+    if (h->Instance == TMC2209_UART) {
+        __HAL_RCC_USART2_CLK_DISABLE();
+        HAL_GPIO_DeInit(TMC2209_UART_TX_PORT, TMC2209_UART_TX_PIN);
+        HAL_GPIO_DeInit(TMC2209_UART_RX_PORT, TMC2209_UART_RX_PIN);
+        return;
+    }
     if (h->Instance != UART_INSTANCE) return;
     __HAL_RCC_USART3_CLK_DISABLE();
     HAL_GPIO_DeInit(UART_TX_PORT, UART_TX_PIN);
@@ -96,13 +103,11 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
 /* --- IRQ --- */
 
 void USART3_IRQHandler(void) { HAL_UART_IRQHandler(&huart); }
-void USART2_IRQHandler(void) { TMC2209_UartIrqHandler();     }
 
-/* --- HAL колбэки --- */
+/* --- HAL колбэки (только USART3 — командный интерфейс) --- */
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
 {
-    if (h->Instance == TMC2209_UART) { TMC2209_UartTxCpltCb(h); return; }
     if (h->Instance != UART_INSTANCE) return;
     tx_tail = (tx_tail + tx_pending) % UART_TX_RING_SIZE;
     tx_pending = 0;
@@ -110,7 +115,6 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
 {
-    if (h->Instance == TMC2209_UART) TMC2209_UartRxCpltCb(h);
     if (h->Instance != UART_INSTANCE) return;
     uint16_t next = (rx_head + 1) % UART_RX_RING_SIZE;
     if (next != rx_tail) {
@@ -122,7 +126,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *h)
 {
-    if (h->Instance == TMC2209_UART) TMC2209_UartErrorCb(h);
     if (h->Instance == UART_INSTANCE) uart_rx_restart();
 }
 

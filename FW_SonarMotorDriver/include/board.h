@@ -67,6 +67,11 @@
 #define TMC2209_RSENSE_OHM      0.11f         /* Резистор измерения тока, Ом */
 #define TMC2209_IRUN_MA         800U          /* Ток при движении, мА (IRUN) */
 #define TMC2209_IHOLD_MA        400U          /* Ток удержания, мА (IHOLD) */
+#define TMC2209_REPLY_DELAY_US  500U          /* Задержка TX→RX для TMC2209 UART */
+#define TMC2209_CFG_SENDDELAY   4U            /* SLAVECONF SENDDELAY (0..15) */
+#define TMC2209_TPOWERDOWN      20U           /* Задержка снижения тока (0..255) */
+#define TMC2209_HALF_DUPLEX     0U            /* 0=full-duplex (TX+1К / RX), 1=half-duplex */
+#define TMC2209_SPREADCYCLE     0U            /* 0=StealthChop, 1=SpreadCycle */
 
 /* -------- Старт — целевая позиция при первом чтении энкодера -------- */
 #define STARTUP_TARGET_OFFSET_DEG 0.0f  /* Офсет от 0° (0 = идти в 0 по энкодеру) */

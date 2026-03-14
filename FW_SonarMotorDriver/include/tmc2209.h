@@ -1,9 +1,15 @@
-/* tmc2209.h — Неблокирующий UART-драйвер TMC2209 (ток, микрошаг). */
+/* tmc2209.h — App-level wrapper for TMC2209 library (SonarMotorDriver).
+ *
+ * Provides a simple facade over the reusable TMC2209 library for use in
+ * the SonarMotorDriver firmware.  STEP/DIR motion is handled by stepper.c;
+ * this module owns only driver configuration, enable, and diagnostics.
+ */
 
-#ifndef TMC2209_H
-#define TMC2209_H
+#ifndef TMC2209_APP_H
+#define TMC2209_APP_H
 
-#include "stm32f1xx_hal.h"
+#include <stdint.h>
+#include "tmc2209/tmc2209.h"
 
 typedef enum {
     TMC_BUSY = 0,
@@ -11,12 +17,31 @@ typedef enum {
     TMC_ERROR
 } TMC2209_Status;
 
+/* ---- Legacy-compatible init API (used by Init_Poll state machine) ---- */
+
 void           TMC2209_InitStart(void);
 TMC2209_Status TMC2209_Poll(void);
 
-void TMC2209_UartIrqHandler(void);
-void TMC2209_UartTxCpltCb(UART_HandleTypeDef *h);
-void TMC2209_UartRxCpltCb(UART_HandleTypeDef *h);
-void TMC2209_UartErrorCb(UART_HandleTypeDef *h);
+/* ---- State ---- */
 
-#endif /* TMC2209_H */
+uint8_t TMC2209_IsReady(void);
+
+/* ---- Enable / disable (writes ENN pin via library port layer) ---- */
+
+void TMC2209_SetEnabled(uint8_t enabled);
+
+/* ---- Runtime reconfiguration ---- */
+
+TMC2209_Status TMC2209_SetCurrent(uint16_t run_ma, uint16_t hold_ma);
+TMC2209_Status TMC2209_SetMicrosteps(uint16_t ms);
+
+/* ---- Diagnostics ---- */
+
+TMC2209_Status TMC2209_GetDrvStatus(tmc2209_drv_status_t *st);
+TMC2209_Status TMC2209_GetVersion(uint8_t *version);
+
+/* ---- Direct library access (advanced use) ---- */
+
+tmc2209_t *TMC2209_GetDriver(void);
+
+#endif /* TMC2209_APP_H */
