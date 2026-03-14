@@ -21,7 +21,7 @@
 #define LED_PIN                 GPIO_PIN_13
 #define LED_TOGGLE_INTERVAL     (POLL_FREQ_HZ / 2U)  /* Heartbeat ~1 Гц */
 
-/* -------- SYNC — SYNC_OUT / SYNC_IN (рядом с USART3 PB10/PB11) -------- */
+/* -------- SYNC — SYNC_OUT / SYNC_IN -------- */
 #define SYNC_OUT_PORT           GPIOB
 #define SYNC_OUT_PIN            GPIO_PIN_9   /* PB9 — SYNC_OUT (HIGH=позиция достигнута) */
 #define SYNC_IN_PORT            GPIOB
@@ -40,6 +40,11 @@
 #define XCVR_DE_PIN             GPIO_PIN_0  /* Driver Enable  (active HIGH → TX MA) */
 #define XCVR_RE_PORT            GPIOB
 #define XCVR_RE_PIN             GPIO_PIN_1  /* Receiver Enable (active LOW → RX SLO) */
+
+/* -------- Режим управления двигателем (compile-time) -------- */
+#define MOTOR_DRIVER_MODE_STEP_DIR_VAL  0   /* STEP/DIR импульсы от MCU (TIM4) */
+#define MOTOR_DRIVER_MODE_UART_VAL      1   /* VACTUAL / internal pulse generator TMC2209 */
+#define MOTOR_DRIVER_MODE               MOTOR_DRIVER_MODE_STEP_DIR_VAL
 
 /* -------- TIM4 + TMC2209 — шаговый двигатель -------- */
 #define MOTOR_FULL_STEPS_REV    200U    /* Полных шагов на оборот (200 = 1.8°, 400 = 0.9°) */
@@ -82,16 +87,13 @@
 #define PID_KD_DEFAULT          0.0f
 #define PID_DEADBAND_DEG        0.1f   /* >= ENCODER_ACCURACY_DEG, иначе дребезг */
 
-/* -------- PA9 / PA10 — зарезервированы для UART bootloader (прошивка) -------- */
-/* Не использовать в приложении. Подключить к разъёму J2: Pin 3 (UART_RX) ← PA9, Pin 4 (UART_TX) → PA10 */
-
-/* -------- USART3 — UART команд и телеметрии (PB10 TX / PB11 RX, IT) -------- */
-#define UART_INSTANCE           USART3
+/* -------- USART1 — UART команд и телеметрии (PA9 TX / PA10 RX, IT) — взаимодействие с ПК -------- */
+#define UART_INSTANCE           USART1
 #define UART_BAUDRATE           115200U
-#define UART_TX_PORT            GPIOB
-#define UART_TX_PIN             GPIO_PIN_10   /* PB10 — USART3_TX → ПК / внешний MCU */
-#define UART_RX_PORT            GPIOB
-#define UART_RX_PIN             GPIO_PIN_11   /* PB11 — USART3_RX ← ПК / внешний MCU */
+#define UART_TX_PORT            GPIOA
+#define UART_TX_PIN             GPIO_PIN_9    /* PA9  — USART1_TX → ПК (разъём J2 Pin 4) */
+#define UART_RX_PORT            GPIOA
+#define UART_RX_PIN             GPIO_PIN_10   /* PA10 — USART1_RX ← ПК (разъём J2 Pin 3) */
 #define UART_TX_RING_SIZE       512U
 #define UART_RX_RING_SIZE       128U
 

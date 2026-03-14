@@ -25,13 +25,13 @@
 ```
                     Замкнутый контур управления (1 кГц)
 
- Уставка       ошибка   ┌─────────┐   шаги    ┌──────────┐
- (t=X) ──────►(Σ)──────►│   PID   ├──────────►│ Stepper  ├──────► Мотор
-               ▲ −      │ Kp+Ki+Kd│           │ TIM4 PWM │    │
-               │        └─────────┘           └──────────┘    │
-               │                                              │
-               │        ┌──────────────────┐                  │
-               └────────┤  Encoder + BiSS  │◄─────────────────┘
+ Уставка       ошибка   ┌─────────┐   шаги    ┌──────────────────────┐
+ (t=X) ──────►(Σ)──────►│   PID   ├──────────►│ MotorDriver          ├──────► Мотор
+               ▲ −      │ Kp+Ki+Kd│           │ (STEP_DIR или UART)  │    │
+               │        └─────────┘           └──────────────────────┘    │
+               │                                                          │
+               │        ┌──────────────────┐                              │
+               └────────┤  Encoder + BiSS  │◄─────────────────────────────┘
             pos_deg     │  SPI+DMA+THVD1452│   обратная связь
                         └──────────────────┘
 
@@ -40,9 +40,9 @@
 
  ┌──────┐  USB CDC  ┌──────────┐
  │  ПК  │◄─────────►│   Cmd    ├──► en / dis / t= / t=± / kp= / ki= / kd= / op= / scan= / stop
- │      │  USART3   │  Parser  │
+ │      │  USART1   │  Parser  │
  │      │◄─────────►│          │
- └──────┘ PB10/PB11 └──────────┘
+ └──────┘ PA9/PA10 └──────────┘
  ПК ◄── Телеметрия (USB TX + UART TX): debug=0 → cp,ec; debug=1 → cp,tp,pe,u,m,ec,kp,ki,kd
 ```
 
@@ -78,7 +78,7 @@
 | --------- | ------------ | --------------------------------- |
 | 4         | DMA1_Ch2/Ch3 | SPI1 RX/TX для BiSS C             |
 | 5         | USB LP       | Обработка USB-пакетов             |
-| 6         | USART3       | UART TX/RX (команды, тел.)        |
+| 6         | USART1       | UART TX/RX (команды, тел.)        |
 | 15        | SysTick      | HAL_GetTick() (для таймаутов HAL) |
 
 
@@ -89,27 +89,25 @@
 ### Выводы STM32
 
 
-| Вывод | Функция       | Назначение                                                |
-| ----- | ------------- | --------------------------------------------------------- |
-| PA5   | SPI1_SCK      | MA → THVD1452 D                                           |
-| PA6   | SPI1_MISO     | SLO ← THVD1452 R                                          |
-| PA9   | —             | **Зарезервировано** для UART bootloader (прошивка)        |
-| PA10  | —             | **Зарезервировано** для UART bootloader (прошивка)        |
-| PB10  | USART3_TX     | UART TX (команды, телеметрия)                             |
-| PB11  | USART3_RX     | UART RX (команды)                                         |
-| PA11  | USB_DM        | USB Data Minus                                            |
-| PA12  | USB_DP        | USB Data Plus                                             |
-| PB0   | GPIO_OUT (DE) | Driver Enable THVD1452 (active HIGH)                      |
-| PB1   | GPIO_OUT (RE) | Receiver Enable THVD1452 (active LOW)                     |
-| PA2   | USART2_TX     | UART TMC2209 → PDN_UART (через 1 кОм)                     |
-| PA3   | USART2_RX     | UART TMC2209 ← PDN_UART (общая линия)                     |
-| PB6   | GPIO_OUT      | ENN TMC2209 (LOW = вкл)                                   |
-| PB7   | GPIO_OUT      | DIR TMC2209                                               |
-| PB8   | TIM4_CH3 AF   | STEP TMC2209 (PWM)                                        |
-| PA7   | GPIO_IN       | DIAG TMC2209 (StallGuard, Open Load; HIGH = ошибка)       |
-| PB9   | GPIO_OUT      | SYNC_OUT (HIGH=позиция достигнута, LOW=движение)         |
-| PB12  | GPIO_IN       | SYNC_IN (внешний триггер синхронизации)                 |
-| PC13  | GPIO_OUT      | LED heartbeat (~1 Гц)                                     |
+| Вывод | Функция       | Назначение                                          |
+| ----- | ------------- | --------------------------------------------------- |
+| PA5   | SPI1_SCK      | MA → THVD1452 D                                     |
+| PA6   | SPI1_MISO     | SLO ← THVD1452 R                                    |
+| PA9   | USART1_TX     | UART TX (команды, телеметрия) → ПК                  |
+| PA10  | USART1_RX     | UART RX (команды) ← ПК                              |
+| PA11  | USB_DM        | USB Data Minus                                      |
+| PA12  | USB_DP        | USB Data Plus                                       |
+| PB0   | GPIO_OUT (DE) | Driver Enable THVD1452 (active HIGH)                |
+| PB1   | GPIO_OUT (RE) | Receiver Enable THVD1452 (active LOW)               |
+| PA2   | USART2_TX     | UART TMC2209 → PDN_UART (через 1 кОм)               |
+| PA3   | USART2_RX     | UART TMC2209 ← PDN_UART (общая линия)               |
+| PB6   | GPIO_OUT      | ENN TMC2209 (LOW = вкл)                             |
+| PB7   | GPIO_OUT      | DIR TMC2209                                         |
+| PB8   | TIM4_CH3 AF   | STEP TMC2209 (PWM)                                  |
+| PA7   | GPIO_IN       | DIAG TMC2209 (StallGuard, Open Load; HIGH = ошибка) |
+| PB9   | GPIO_OUT      | SYNC_OUT (HIGH=позиция достигнута, LOW=движение)    |
+| PB12  | GPIO_IN       | SYNC_IN (внешний триггер синхронизации)             |
+| PC13  | GPIO_OUT      | LED heartbeat (~1 Гц)                               |
 
 
 ### Схема подключения
@@ -134,8 +132,8 @@
     │   └── PA7 ◄──│ DIAG     │ (StallGuard, Open Load)
     │              └──────────┘
     ├── PB9  ──►  SYNC_OUT (позиция достигнута)
-    ├── PB10 ──►  UART TX ──► ПК / внешний MCU (115200 8N1)
-    ├── PB11 ◄──  UART RX ◄── ПК / внешний MCU
+    ├── PA9  ──►  UART TX ──► ПК (115200 8N1)
+    ├── PA10 ◄──  UART RX ◄── ПК
     ├── PB12 ◄──  SYNC_IN (внешний триггер)
     ├── PA11 ──┐
     └── PA12 ──┼── USB → ПК (COM-порт)
@@ -193,48 +191,95 @@
 
 ---
 
+## Motor-driver слой
+
+Проект использует **единый motor-driver слой** (`motor_driver.c/.h`), который объединяет:
+
+- **lib/tmc2209** — core library для TMC2209 (регистры, UART, конфиг, диагностика)
+- **STEP/DIR backend** — генерация импульсов через TIM4 PWM (встроена в motor_driver)
+- **UART motion backend** — управление через VACTUAL (internal pulse generator TMC2209)
+- **ENN** — единственный владелец пина enable (через tmc2209 enable/disable)
+
+Приложение работает только с high-level API: `MotorDriver_Init()`, `MotorDriver_SetEnabled()`, `MotorDriver_MoveSteps()`, `MotorDriver_Stop()` и т.д. Детали UART/TIM/GPIO скрыты.
+
+### Режимы управления двигателем (board.h: MOTOR_DRIVER_MODE)
+
+
+| Режим    | Значение | Описание                                                                 |
+| -------- | -------- | ------------------------------------------------------------------------ |
+| STEP_DIR | 0        | STEP/DIR импульсы от MCU (TIM4). Основной режим, позиционное управление. |
+| UART     | 1        | VACTUAL / internal pulse generator TMC2209. Движение через UART API.     |
+
+
+Режим задаётся compile-time в `board.h`:
+
+```c
+#define MOTOR_DRIVER_MODE  MOTOR_DRIVER_MODE_STEP_DIR_VAL  /* или MOTOR_DRIVER_MODE_UART_VAL */
+```
+
+### Инициализация
+
+Один шаг `MotorDriver_Init()` заменяет прежние `Stepper_Init()`, `TMC2209_InitStart()`, `TMC2209_Poll()`. Внутри:
+
+1. Инициализация UART к TMC2209 (USART2)
+2. Инициализация lib/tmc2209 (конфиг, проверка связи)
+3. STEP/DIR backend (если режим STEP_DIR): GPIO STEP/DIR, TIM4 PWM
+4. Приведение ENN в консистентное состояние (disabled)
+
+### Удалённые элементы
+
+- `Stepper_*()` как public API — функциональность перенесена в motor_driver
+- `TMC2209_InitStart()` / `TMC2209_Poll()` — заменены на `MotorDriver_Init()`
+- Двойное управление ENN (stepper + tmc2209) — теперь только motor_driver
+
+---
+
 ## Структура проекта
 
 ```
 FW_SonarMotorDriver/
 ├── platformio.ini
 ├── include/
-│   ├── board.h              — выводы, частоты, TMC2209_MICROSTEPS, PID defaults
+│   ├── board.h              — выводы, MOTOR_DRIVER_MODE, TMC2209_MICROSTEPS, PID
 │   ├── stm32f1xx_hal_conf.h — конфигурация HAL
+│   ├── motor_driver.h       — единый API управления двигателем
 │   ├── biss_c.h             — BiSS C интерфейс
 │   ├── usb_cdc.h            — USB CDC API
 │   ├── usbd_conf.h          — USB Device Library конфиг
 │   ├── usbd_desc.h          — USB дескрипторы
-│   ├── stepper.h            — STEP/DIR/ENABLE
 │   ├── pid.h                — PID-регулятор
-│   ├── uart.h               — UART (USART3) API
+│   ├── uart.h               — UART (USART1) API
 │   └── cmd_parser.h         — парсер команд en/dis/t/t±/kp/ki/kd/op/debug/scan/stop
 ├── src/
 │   ├── main.c               — init, главный цикл, контроллер, телеметрия
+│   ├── motor_driver.c       — TMC2209 + STEP/DIR + UART motion, единый владелец ENN
+│   ├── tmc2209_port_stm32_hal.c — transport/port для UART и GPIO ENN
 │   ├── biss_c.c             — BiSS C: SPI + DMA, CRC6, разбор кадра
-│   ├── stepper.c            — TIM4 PWM генерация импульсов STEP
 │   ├── pid.c                — PID с anti-windup
 │   ├── cmd_parser.c         — парсер команд (USB + UART)
-│   ├── uart.c               — UART (USART3): кольцевые буферы, TX/RX по прерываниям
+│   ├── uart.c               — UART (USART1 PA9/PA10): кольцевые буферы, TX/RX по прерываниям
 │   ├── usb_cdc.c            — USB CDC, кольцевые буферы, readline
 │   ├── usbd_conf.c          — низкоуровневая привязка USB к STM32
 │   └── usbd_desc.c          — USB дескрипторы устройства
+├── lib/
+│   └── tmc2209/             — core library TMC2209 (reusable)
 └── tools/
     └── read_serial.py       — утилита чтения COM-порта
 ```
 
 
-| Модуль       | Содержание                                                                                    |
-| ------------ | --------------------------------------------------------------------------------------------- |
-| `board.h`    | Константы: выводы, TMC2209_MICROSTEPS (32), PID, буферы                                       |
-| `main.c`     | BSP, clock, TIM2, DWT, неблокирующая init-стейт-машина, CL/OL контроллер, команды, телеметрия |
-| `biss_c`     | BiSS C: SPI + DMA, разбор кадра, CRC6                                                         |
-| `stepper`    | TIM4 PWM: STEP/DIR/ENABLE для TMC2209                                                         |
-| `tmc2209`    | UART: неблокирующая стейт-машина настройки IRUN, IHOLD, микрошаг                              |
-| `pid`        | PID с anti-windup и ограничением выхода                                                       |
-| `cmd_parser` | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop)                     |
-| `uart`       | UART (USART3): кольцевые буферы TX/RX, readline                                               |
-| `usb_cdc`    | USB CDC: кольцевые буферы TX/RX, readline, DFU reboot                                         |
+| Модуль           | Содержание                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------- |
+| `board.h`        | Константы: выводы, MOTOR_DRIVER_MODE, TMC2209_MICROSTEPS (32), PID, буферы                        |
+| `main.c`         | BSP, clock, TIM2, DWT, init, CL/OL контроллер, команды, телеметрия. Вызывает только MotorDriver_* |
+| `motor_driver`   | TMC2209 init/config, STEP/DIR (TIM4), UART motion (VACTUAL), ENN, high-level API                  |
+| `tmc2209_port_`* | UART и GPIO ENN для lib/tmc2209                                                                   |
+| `lib/tmc2209`    | Core library: регистры, UART, enable, VACTUAL, диагностика (без таймера/STEP)                     |
+| `biss_c`         | BiSS C: SPI + DMA, разбор кадра, CRC6                                                             |
+| `pid`            | PID с anti-windup и ограничением выхода                                                           |
+| `cmd_parser`     | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop)                         |
+| `uart`           | UART (USART1 PA9/PA10): кольцевые буферы TX/RX, readline. Не содержит логику моторного управления. |
+| `usb_cdc`        | USB CDC: кольцевые буферы TX/RX, readline, DFU reboot                                             |
 
 
 ---
@@ -260,8 +305,8 @@ pio run --target upload   # Прошивка
 2. TMC2209: STEP→PB8, DIR→PB7, ENN→PB6, PDN_UART↔PA2/PA3 (UART TX/RX), DIAG→PA7.
 3. Питание энкодера 5–12 В, питание драйвера.
 4. USB → ПК, открыть COM-порт.
-5. UART команд и телеметрии: PB10 (TX) / PB11 (RX) → ПК или внешний MCU.
-6. **UART bootloader** (прошивка): PA9 (TX) / PA10 (RX) — подключить к разъёму J2, Pin 3 (UART_RX) ← PA9, Pin 4 (UART_TX) → PA10. BOOT0=1 при сбросе для входа в bootloader.
+5. UART команд и телеметрии: PA9 (TX) / PA10 (RX) → ПК (разъём J2: Pin 4 TX, Pin 3 RX).
+6. **UART bootloader** (прошивка): BOOT0=1 при сбросе; для загрузки использовать PA9/PA10 (те же контакты).
 
 Команды и телеметрия дублируются на оба интерфейса (USB CDC и UART).
 
@@ -484,6 +529,7 @@ cp:90.12,tp:180.00,pe:89.88,u:0.0000,m:ol,ec:2,kp:0.0100,ki:0.0000,kd:0.0000
 #define OUTPUT_PERIOD_MS_DEFAULT 4U     // Период телеметрии (мс), 0 = выкл; 4 мс = 250 Гц
 #define TELEMETRY_DEBUG_DEFAULT 0        // 0 = cp,ec; 1 = полная телеметрия
 #define STARTUP_TARGET_OFFSET_DEG 0.0f   // Офсет от 0° при старте; 0 = домашняя позиция
+#define MOTOR_DRIVER_MODE       MOTOR_DRIVER_MODE_STEP_DIR_VAL  // или MOTOR_DRIVER_MODE_UART_VAL
 #define SYNC_OUT_PORT           GPIOB   // SYNC_OUT (PB9)
 #define SYNC_OUT_PIN            GPIO_PIN_9
 #define SYNC_IN_PORT            GPIOB   // SYNC_IN (PB12)
@@ -526,14 +572,18 @@ BiSS_StartRead();                           // Неблокирующее (DMA)
 if (BiSS_IsReady()) st = BiSS_GetResult(&rd);  // rd.position, rd.angle_deg
 ```
 
-### Stepper
+### MotorDriver (единый API управления двигателем)
 
 ```c
-Stepper_Init();
-Stepper_SetEnable(1);   // Включить (ENN = LOW)
-Stepper_Steps(10);      // 10 шагов CW (TIM4 PWM, неблокирующий)
-Stepper_Steps(-5);      // 5 шагов CCW
-Stepper_Stop();          // Остановить PWM
+MotorDriver_Init();
+MotorDriver_SetEnabled(1);   // Включить (ENN = LOW)
+MotorDriver_MoveSteps(10);   // 10 шагов CW
+MotorDriver_MoveSteps(-5);   // 5 шагов CCW
+MotorDriver_Stop();          // Остановить
+MotorDriver_ConfigureCurrent(800, 400);   // run_ma, hold_ma
+MotorDriver_ConfigureMicrosteps(32);
+MotorDriver_GetDrvStatus(&st);
+MotorDriver_GetVersion(&ver);
 ```
 
 ### PID

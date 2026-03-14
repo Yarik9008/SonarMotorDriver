@@ -1,8 +1,7 @@
-/* uart.c — UART (USART3, PB10 TX / PB11 RX) через прерывания.
- * PA9/PA10 зарезервированы для UART bootloader.
+/* uart.c — UART (USART1, PA9 TX / PA10 RX) для взаимодействия с ПК.
  *
  * USART2 (TMC2209) настраивается здесь через HAL_UART_MspInit, но
- * используется только библиотекой TMC2209 в blocking-режиме (без IRQ).
+ * используется только motor_driver в blocking-режиме (без IRQ).
  */
 
 #include "uart.h"
@@ -72,8 +71,8 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
     }
     if (h->Instance != UART_INSTANCE) return;
 
-    __HAL_RCC_USART3_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin = UART_TX_PIN; gpio.Mode = GPIO_MODE_AF_PP; gpio.Speed = GPIO_SPEED_FREQ_HIGH;
@@ -81,8 +80,8 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
     gpio.Pin = UART_RX_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(UART_RX_PORT, &gpio);
 
-    HAL_NVIC_SetPriority(USART3_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(USART3_IRQn);
+    HAL_NVIC_SetPriority(USART1_IRQn, IRQ_PRIO_UART, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
 }
 
 void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
@@ -94,17 +93,17 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
         return;
     }
     if (h->Instance != UART_INSTANCE) return;
-    __HAL_RCC_USART3_CLK_DISABLE();
+    __HAL_RCC_USART1_CLK_DISABLE();
     HAL_GPIO_DeInit(UART_TX_PORT, UART_TX_PIN);
     HAL_GPIO_DeInit(UART_RX_PORT, UART_RX_PIN);
-    HAL_NVIC_DisableIRQ(USART3_IRQn);
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
 }
 
 /* --- IRQ --- */
 
-void USART3_IRQHandler(void) { HAL_UART_IRQHandler(&huart); }
+void USART1_IRQHandler(void) { HAL_UART_IRQHandler(&huart); }
 
-/* --- HAL колбэки (только USART3 — командный интерфейс) --- */
+/* --- HAL колбэки (только USART1 — командный интерфейс) --- */
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
 {

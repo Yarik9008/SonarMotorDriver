@@ -4,8 +4,7 @@
 #include "board.h"
 #include "biss_c.h"
 #include "usb_cdc.h"
-#include "stepper.h"
-#include "tmc2209.h"
+#include "motor_driver.h"
 #include "pid.h"
 #include "cmd_parser.h"
 #include "uart.h"
@@ -81,8 +80,7 @@ void Delay_ms(uint32_t ms)
 
 typedef enum {
     INIT_USB_CDC, INIT_UART, INIT_USB_ENUM_WAIT,
-    INIT_BISS_INIT, INIT_BISS_WAIT, INIT_STEPPER,
-    INIT_TMC_START, INIT_TMC_POLL,
+    INIT_BISS_INIT, INIT_BISS_WAIT, INIT_MOTOR_DRIVER,
     INIT_POLL_TIMER, INIT_IWDG, INIT_DONE
 } InitState;
 
@@ -124,22 +122,12 @@ static uint8_t Init_Poll(void)
 
     case INIT_BISS_WAIT:
         if ((DWT->CYCCNT - s_init_t0) >= DWT_MS_CYCLES(ENCODER_STARTUP_MS))
-            s_init = INIT_STEPPER;
+            s_init = INIT_MOTOR_DRIVER;
         break;
 
-    case INIT_STEPPER:
-        Stepper_Init();
-        s_init = INIT_TMC_START;
-        break;
-
-    case INIT_TMC_START:
-        TMC2209_InitStart();
-        s_init = INIT_TMC_POLL;
-        break;
-
-    case INIT_TMC_POLL:
-        if (TMC2209_Poll() != TMC_BUSY)
-            s_init = INIT_POLL_TIMER;
+    case INIT_MOTOR_DRIVER:
+        MotorDriver_Init();
+        s_init = INIT_POLL_TIMER;
         break;
 
     case INIT_POLL_TIMER:
@@ -207,11 +195,7 @@ static int8_t    g_scan_inf      = 0;
 
 static void DoSteps(int32_t steps)
 {
-#if MOTOR_DIR_INVERT
-    Stepper_Steps(-steps);
-#else
-    Stepper_Steps(steps);
-#endif
+    MotorDriver_MoveSteps(steps);
 }
 
 /* --- MAIN --- */
@@ -285,7 +269,7 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
         g_ol_pos     = pos;
         g_homing     = 1;
         g_enabled    = 1;
-        Stepper_SetEnable(1);
+        MotorDriver_SetEnabled(1);
         return;
     }
 
@@ -321,7 +305,7 @@ static void Mode_Update(uint8_t enc_ok)
 static void MotorControl_Tick(uint8_t enc_ok)
 {
     if (!g_enabled) {
-        Stepper_Stop();
+        MotorDriver_Stop();
         g_last_ctrl = 0;
         return;
     }
@@ -385,7 +369,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
             }
-            Stepper_Stop();
+            MotorDriver_Stop();
             PID_Reset(&g_pid);
             g_cl_accum = 0;
         }
@@ -420,7 +404,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
             }
-            Stepper_Stop();
+            MotorDriver_Stop();
         }
     }
 }
@@ -534,7 +518,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_ENABLE:
         g_enabled  = 1;
         g_cont_dir = 0;
-        Stepper_SetEnable(1);
+        MotorDriver_SetEnabled(1);
         PID_Reset(&g_pid);
         g_cl_accum   = 0;
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
@@ -545,8 +529,8 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_DISABLE:
         g_enabled  = 0;
         g_cont_dir = 0;
-        Stepper_Stop();
-        Stepper_SetEnable(0);
+        MotorDriver_Stop();
+        MotorDriver_SetEnabled(0);
         SendResponse("ok:dis\r\n");
         break;
 
@@ -565,7 +549,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_homing   = 0;
         PID_Reset(&g_pid);
         g_cl_accum = 0;
-        if (!g_enabled) { g_enabled = 1; Stepper_SetEnable(1); }
+        if (!g_enabled) { g_enabled = 1; MotorDriver_SetEnabled(1); }
         SendResponse("ok:t=%c\r\n", (g_cont_dir > 0) ? '+' : '-');
         break;
 
@@ -630,7 +614,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_cont_dir = 0;
         g_scan_inf = 0;
         g_scan_st  = SCAN_IDLE;
-        Stepper_Stop();
+        MotorDriver_Stop();
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
         PID_Reset(&g_pid);
         g_cl_accum = 0;
