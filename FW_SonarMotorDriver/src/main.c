@@ -9,7 +9,7 @@
 #include "board.h"
 #include "biss_c.h"
 #include "usb_cdc.h"
-#include "tmc2209.h"
+#include "tmc2209/tmc2209_motor.h"
 #include "pid.h"
 #include "cmd_parser.h"
 #include "uart.h"
@@ -102,9 +102,10 @@ static uint8_t Init_Poll(void)
         break;
 
     case INIT_UART:
-        UART_Init();
-        s_init_t0 = DWT->CYCCNT;
-        s_init = INIT_USB_ENUM_WAIT;
+        if (UART_Init() == 0) {
+            s_init_t0 = DWT->CYCCNT;
+            s_init = INIT_USB_ENUM_WAIT;
+        }
         break;
 
     case INIT_USB_ENUM_WAIT:
@@ -131,7 +132,7 @@ static uint8_t Init_Poll(void)
         break;
 
     case INIT_MOTOR_DRIVER:
-        if (TMC2209_Init() == 0) {
+        if (tmc2209_motor_init() == 0) {
             s_init = INIT_POLL_TIMER;
         }
         /* Если -1, остаёмся здесь: init motor subsystem failed */
@@ -202,7 +203,7 @@ static int8_t    g_scan_inf      = 0;
 
 static void DoSteps(int32_t steps)
 {
-    TMC2209_MoveSteps(steps);
+    tmc2209_motor_move_steps(steps);
 }
 
 /* --- MAIN --- */
@@ -238,7 +239,7 @@ int main(void)
 
         USB_CDC_Task();
         UART_Task();
-        TMC2209_Task();
+        tmc2209_motor_task();
         PollCommands();
 
         if (!__HAL_TIM_GET_FLAG(&htim_poll, TIM_FLAG_UPDATE))
@@ -277,7 +278,7 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
         g_ol_pos     = pos;
         g_homing     = 1;
         g_enabled    = 1;
-        TMC2209_SetEnabled(1);
+        tmc2209_motor_set_enabled(1);
         return;
     }
 
@@ -313,7 +314,7 @@ static void Mode_Update(uint8_t enc_ok)
 static void MotorControl_Tick(uint8_t enc_ok)
 {
     if (!g_enabled) {
-        TMC2209_Stop();
+        tmc2209_motor_stop();
         g_last_ctrl = 0;
         return;
     }
@@ -377,7 +378,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
             }
-            TMC2209_Stop();
+            tmc2209_motor_stop();
             PID_Reset(&g_pid);
             g_cl_accum = 0;
         }
@@ -412,7 +413,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
             }
-            TMC2209_Stop();
+            tmc2209_motor_stop();
         }
     }
 }
@@ -534,7 +535,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_ENABLE:
         g_enabled  = 1;
         g_cont_dir = 0;
-        TMC2209_SetEnabled(1);
+        tmc2209_motor_set_enabled(1);
         PID_Reset(&g_pid);
         g_cl_accum   = 0;
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
@@ -545,8 +546,8 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_DISABLE:
         g_enabled  = 0;
         g_cont_dir = 0;
-        TMC2209_Stop();
-        TMC2209_SetEnabled(0);
+        tmc2209_motor_stop();
+        tmc2209_motor_set_enabled(0);
         SendResponse("ok:dis\r\n");
         break;
 
@@ -565,7 +566,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_homing   = 0;
         PID_Reset(&g_pid);
         g_cl_accum = 0;
-        if (!g_enabled) { g_enabled = 1; TMC2209_SetEnabled(1); }
+        if (!g_enabled) { g_enabled = 1; tmc2209_motor_set_enabled(1); }
         SendResponse("ok:t=%c\r\n", (g_cont_dir > 0) ? '+' : '-');
         break;
 
@@ -630,7 +631,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_cont_dir = 0;
         g_scan_inf = 0;
         g_scan_st  = SCAN_IDLE;
-        TMC2209_Stop();
+        tmc2209_motor_stop();
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
         PID_Reset(&g_pid);
         g_cl_accum = 0;
@@ -640,8 +641,8 @@ static void ProcessCommand(const Cmd_Result *cmd)
         break;
 
     case CMD_SET_IRUN: {
-        TMC2209_Config cfg; TMC2209_GetConfig(&cfg);
-        int r = TMC2209_SetCurrent(cmd->irun_ma, cfg.hold_ma);
+        tmc2209_motor_config_t cfg; tmc2209_motor_get_config(&cfg);
+        int r = tmc2209_motor_set_current(cmd->irun_ma, cfg.hold_ma);
         if      (r ==  0) SendResponse("ok:irun=%u\r\n", (unsigned)cmd->irun_ma);
         else if (r == -1) SendResponse("err:not ready\r\n");
         else if (r == -2) SendResponse("err:bad arg\r\n");
@@ -650,8 +651,8 @@ static void ProcessCommand(const Cmd_Result *cmd)
     }
 
     case CMD_SET_IHOLD: {
-        TMC2209_Config cfg; TMC2209_GetConfig(&cfg);
-        int r = TMC2209_SetCurrent(cfg.run_ma, cmd->ihold_ma);
+        tmc2209_motor_config_t cfg; tmc2209_motor_get_config(&cfg);
+        int r = tmc2209_motor_set_current(cfg.run_ma, cmd->ihold_ma);
         if      (r ==  0) SendResponse("ok:ihold=%u\r\n", (unsigned)cmd->ihold_ma);
         else if (r == -1) SendResponse("err:not ready\r\n");
         else if (r == -2) SendResponse("err:bad arg\r\n");
@@ -660,7 +661,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
     }
 
     case CMD_SET_ICUR: {
-        int r = TMC2209_SetCurrent(cmd->irun_ma, cmd->ihold_ma);
+        int r = tmc2209_motor_set_current(cmd->irun_ma, cmd->ihold_ma);
         if      (r ==  0) SendResponse("ok:icur=%u,%u\r\n",
                               (unsigned)cmd->irun_ma, (unsigned)cmd->ihold_ma);
         else if (r == -1) SendResponse("err:not ready\r\n");
@@ -671,11 +672,11 @@ static void ProcessCommand(const Cmd_Result *cmd)
 
     case CMD_SET_MSTEP: {
         /* Смена микрошагов безопасна при остановленном моторе */
-        if (TMC2209_IsMoving()) {
+        if (tmc2209_motor_is_moving()) {
             SendResponse("err:busy stop motor first\r\n");
             break;
         }
-        int r = TMC2209_SetMicrosteps(cmd->microsteps);
+        int r = tmc2209_motor_set_microsteps(cmd->microsteps);
         if      (r ==  0) SendResponse("ok:mstep=%u\r\n", (unsigned)cmd->microsteps);
         else if (r == -1) SendResponse("err:not ready\r\n");
         else if (r == -2) SendResponse("err:bad arg (1/2/4/8/16/32/64/128/256)\r\n");
@@ -684,10 +685,10 @@ static void ProcessCommand(const Cmd_Result *cmd)
     }
 
     case CMD_GET_MCFG: {
-        TMC2209_Config cfg;
-        TMC2209_GetConfig(&cfg);
+        tmc2209_motor_config_t cfg;
+        tmc2209_motor_get_config(&cfg);
         SendResponse("mode=%s run=%u hold=%u microsteps=%u ready=%u\r\n",
-            (cfg.mode == TMC2209_CONTROL_MODE_STEP_DIR) ? "STEP_DIR" : "UART",
+            (cfg.mode == TMC2209_MOTOR_CONTROL_STEP_DIR) ? "STEP_DIR" : "UART",
             (unsigned)cfg.run_ma, (unsigned)cfg.hold_ma,
             (unsigned)cfg.microsteps, (unsigned)cfg.ready);
         break;

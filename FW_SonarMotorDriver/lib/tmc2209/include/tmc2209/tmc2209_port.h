@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 
+#include <stdint.h>
+
 typedef struct {
     /*
      * Transmit data over UART.
@@ -39,6 +41,24 @@ typedef struct {
      * level=0 → driver enabled (ENN low), level=1 → disabled (ENN high).
      */
     void (*set_enable)(uint8_t level, void *ctx);
+
+    /* ---- Motor Backend Callbacks (Optional, for Motor Facade) ---- */
+
+    /* Initialize motor-related hardware (TIM, STEP/DIR GPIO). */
+    int (*motor_hw_init)(void *ctx);
+
+    /* Set step pulse direction. */
+    void (*motor_set_dir)(int8_t dir_cw, void *ctx);
+
+    /* Update pulse generator rate (ARR, CCR). 
+       If arr=0, the backend should stop pulses. */
+    void (*motor_set_rate)(uint16_t arr, uint16_t ccr, void *ctx);
+
+    /* Stop pulse generator immediately. */
+    void (*motor_stop)(void *ctx);
+
+    /* Current poll ticks or milliseconds for internal timing. */
+    uint32_t (*get_tick)(void *ctx);
 
     /*
      * Optional debug/trace output (may be NULL).

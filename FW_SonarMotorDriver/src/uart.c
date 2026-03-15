@@ -1,4 +1,4 @@
-/* uart.c — UART (USART1, PA9 TX / PA10 RX) для взаимодействия с ПК.
+/* uart.c — UART (USART1, PA9 TX / PA10 RX) для взаимодействия с ПК (командный интерфейс).
  *
  * RX: DMA circular buffer (DMA1_Channel5) + IDLE line IRQ.
  *   Прерывания только при IDLE и при DMA half/full-transfer.
@@ -7,8 +7,7 @@
  * TX: DMA (DMA1_Channel4) через кольцевой TX ring.
  *   CPU не тратится на отправку байтов — только на копирование в ring.
  *
- * USART2 (TMC2209) инициализируется в HAL_UART_MspInit, но управляется
- * только фасадом tmc2209.c в blocking-режиме (без IRQ).
+ * UART для драйвера TMC2209 обслуживается внутри библиотеки lib/tmc2209.
  */
 
 #include "uart.h"
@@ -90,7 +89,7 @@ static uint16_t tx_free(void)
 
 /* ---- Инициализация ---- */
 
-void UART_Init(void)
+int UART_Init(void)
 {
     huart.Instance          = UART_INSTANCE;
     huart.Init.BaudRate     = UART_BAUDRATE;
@@ -100,82 +99,87 @@ void UART_Init(void)
     huart.Init.Mode         = UART_MODE_TX_RX;
     huart.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
     huart.Init.OverSampling = UART_OVERSAMPLING_16;
-    HAL_UART_Init(&huart);
-
-    /* Включить IDLE interrupt */
-    __HAL_UART_ENABLE_IT(&huart, UART_IT_IDLE);
+    
+    if (HAL_UART_Init(&huart) != HAL_OK) {
+        return -1;
+    }
 
     /* Запустить DMA RX в circular режиме */
-    HAL_UART_Receive_DMA(&huart, dma_rx_buf, UART_RX_DMA_SIZE);
     dma_rx_prev = 0;
+    if (HAL_UART_Receive_DMA(&huart, dma_rx_buf, UART_RX_DMA_SIZE) != HAL_OK) {
+        return -1;
+    }
+
+    /* Включить IDLE interrupt только если DMA успешно запущен */
+    __HAL_UART_ENABLE_IT(&huart, UART_IT_IDLE);
+    
+    return 0;
 }
 
 /* ---- HAL MSP ---- */
 
 void HAL_UART_MspInit(UART_HandleTypeDef *h)
 {
-    if (h->Instance != UART_INSTANCE) return;
+    if (h->Instance == UART_INSTANCE) {
+        __HAL_RCC_USART1_CLK_ENABLE();
+        __HAL_RCC_DMA1_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    if (h->Instance != UART_INSTANCE) return;
+        /* GPIO */
+        GPIO_InitTypeDef gpio = {0};
+        gpio.Pin = UART_TX_PIN; gpio.Mode = GPIO_MODE_AF_PP; gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(UART_TX_PORT, &gpio);
+        gpio.Pin = UART_RX_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_PULLUP;
+        HAL_GPIO_Init(UART_RX_PORT, &gpio);
 
-    __HAL_RCC_USART1_CLK_ENABLE();
-    __HAL_RCC_DMA1_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
+        /* DMA RX: DMA1_Channel5 — USART1_RX, circular */
+        hdma_uart_rx.Instance                 = DMA1_Channel5;
+        hdma_uart_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
+        hdma_uart_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
+        hdma_uart_rx.Init.MemInc              = DMA_MINC_ENABLE;
+        hdma_uart_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+        hdma_uart_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+        hdma_uart_rx.Init.Mode                = DMA_CIRCULAR;
+        hdma_uart_rx.Init.Priority            = DMA_PRIORITY_MEDIUM;
+        HAL_DMA_Init(&hdma_uart_rx);
+        __HAL_LINKDMA(h, hdmarx, hdma_uart_rx);
 
-    /* GPIO */
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin = UART_TX_PIN; gpio.Mode = GPIO_MODE_AF_PP; gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(UART_TX_PORT, &gpio);
-    gpio.Pin = UART_RX_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(UART_RX_PORT, &gpio);
+        /* DMA TX: DMA1_Channel4 — USART1_TX, normal */
+        hdma_uart_tx.Instance                 = DMA1_Channel4;
+        hdma_uart_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
+        hdma_uart_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
+        hdma_uart_tx.Init.MemInc              = DMA_MINC_ENABLE;
+        hdma_uart_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+        hdma_uart_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+        hdma_uart_tx.Init.Mode                = DMA_NORMAL;
+        hdma_uart_tx.Init.Priority            = DMA_PRIORITY_LOW;
+        HAL_DMA_Init(&hdma_uart_tx);
+        __HAL_LINKDMA(h, hdmatx, hdma_uart_tx);
 
-    /* DMA RX: DMA1_Channel5 — USART1_RX, circular */
-    hdma_uart_rx.Instance                 = DMA1_Channel5;
-    hdma_uart_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
-    hdma_uart_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
-    hdma_uart_rx.Init.MemInc              = DMA_MINC_ENABLE;
-    hdma_uart_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_uart_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-    hdma_uart_rx.Init.Mode                = DMA_CIRCULAR;
-    hdma_uart_rx.Init.Priority            = DMA_PRIORITY_MEDIUM;
-    HAL_DMA_Init(&hdma_uart_rx);
-    __HAL_LINKDMA(h, hdmarx, hdma_uart_rx);
+        /* DMA IRQs */
+        HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, IRQ_PRIO_UART, 0);
+        HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+        HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, IRQ_PRIO_UART, 0);
+        HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
-    /* DMA TX: DMA1_Channel4 — USART1_TX, normal */
-    hdma_uart_tx.Instance                 = DMA1_Channel4;
-    hdma_uart_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
-    hdma_uart_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
-    hdma_uart_tx.Init.MemInc              = DMA_MINC_ENABLE;
-    hdma_uart_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_uart_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-    hdma_uart_tx.Init.Mode                = DMA_NORMAL;
-    hdma_uart_tx.Init.Priority            = DMA_PRIORITY_LOW;
-    HAL_DMA_Init(&hdma_uart_tx);
-    __HAL_LINKDMA(h, hdmatx, hdma_uart_tx);
-
-    /* DMA IRQs */
-    HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
-    HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
-
-    /* USART1 IRQ (нужен для IDLE line detection) */
-    HAL_NVIC_SetPriority(USART1_IRQn, IRQ_PRIO_UART, 0);
-    HAL_NVIC_EnableIRQ(USART1_IRQn);
+        /* USART1 IRQ (нужен для IDLE line detection) */
+        HAL_NVIC_SetPriority(USART1_IRQn, IRQ_PRIO_UART, 0);
+        HAL_NVIC_EnableIRQ(USART1_IRQn);
+    }
 }
 
 void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
 {
-    if (h->Instance != UART_INSTANCE) return;
-    if (h->Instance != UART_INSTANCE) return;
-    HAL_DMA_DeInit(&hdma_uart_rx);
-    HAL_DMA_DeInit(&hdma_uart_tx);
-    __HAL_RCC_USART1_CLK_DISABLE();
-    HAL_GPIO_DeInit(UART_TX_PORT, UART_TX_PIN);
-    HAL_GPIO_DeInit(UART_RX_PORT, UART_RX_PIN);
-    HAL_NVIC_DisableIRQ(USART1_IRQn);
-    HAL_NVIC_DisableIRQ(DMA1_Channel4_IRQn);
-    HAL_NVIC_DisableIRQ(DMA1_Channel5_IRQn);
+    if (h->Instance == UART_INSTANCE) {
+        HAL_DMA_DeInit(&hdma_uart_rx);
+        HAL_DMA_DeInit(&hdma_uart_tx);
+        __HAL_RCC_USART1_CLK_DISABLE();
+        HAL_GPIO_DeInit(UART_TX_PORT, UART_TX_PIN);
+        HAL_GPIO_DeInit(UART_RX_PORT, UART_RX_PIN);
+        HAL_NVIC_DisableIRQ(USART1_IRQn);
+        HAL_NVIC_DisableIRQ(DMA1_Channel4_IRQn);
+        HAL_NVIC_DisableIRQ(DMA1_Channel5_IRQn);
+    }
 }
 
 /* ---- IRQ handlers ---- */

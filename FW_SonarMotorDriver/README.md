@@ -192,17 +192,18 @@
 
 ---
 
-## Motor Facade слой
+Проект использует **единый моторный фасад** внутри библиотеки `lib/tmc2209`, который объединяет:
 
-Проект использует **единый app-level facade** (`tmc2209.c/.h`), который объединяет:
+- **Core Driver** — низкоуровневая библиотека для TMC2209 (регистры, UART, конфиг).
+- **Platform Port** — STM32 HAL-специфичная реализация (GPIO, UART, TIM).
+- **Motor Backend** — логика генерации импульсов (STEP/DIR через TIM4 или UART VACTUAL).
+- **Diagnostics** — неблокирующий периодический опрос `DRV_STATUS` каждые 500 мс.
 
-- **lib/tmc2209** — core library для TMC2209 (регистры, UART, конфиг, диагностика)
-- **STEP/DIR backend** — генерация импульсов через TIM4 PWM. **Continuous timer model**: таймер запускается один раз при начале движения и работает непрерывно; ARR/CCR обновляются на лету без stop/start.
-- **UART motion backend** — управление через VACTUAL (internal pulse generator TMC2209)
-- **ENN** — единственный владелец пина enable (через lib/tmc2209)
-- **TMC2209_Task()** — неблокирующий периодический опрос DRV_STATUS каждые 500 мс. Вызывается из main loop. Кэш доступен через `TMC2209_GetCachedDrvStatus()`.
-
-Приложение работает только с high-level API: `TMC2209_Init()`, `TMC2209_SetEnabled()`, `TMC2209_MoveSteps()`, `TMC2209_Stop()` и т.д. Детали UART/TIM/GPIO скрыты.
+Приложение работает только с высокоуровневым API: `tmc2209_motor_init()`, `tmc2209_motor_set_enabled()`, `tmc2209_motor_move_steps()`, `tmc2209_motor_stop()` и т.д. Команды конфигурации во время выполнения (`irun`, `ihold`, `mstep`) возвращают дифференцированные коды ошибок:
+- `ok` — успешно применено.
+- `err:not ready` — драйвер не инициализирован.
+- `err:bad arg` — недопустимый аргумент (например, неверный ток или шаг).
+- `err:apply failed` — ошибка связи или применения настройки в чип.
 
 ### Режимы управления двигателем (board.h: MOTOR_DRIVER_MODE)
 
@@ -221,7 +222,7 @@
 
 ### Инициализация
 
-Один шаг `TMC2209_Init()` заменяет старые подходы. Внутри:
+Один шаг `tmc2209_motor_init()` заменяет старые подходы. Внутри:
 
 1. Инициализация UART к TMC2209 (USART2, blocking)
 2. Инициализация lib/tmc2209 (конфиг, проверка связи)
@@ -231,8 +232,8 @@
 ### Удалённые элементы
 
 - Отдельный `stepper.c` — функциональность перенесена внутрь фасада
-- Устаревшие `TMC2209_InitStart()` / `TMC2209_Poll()` — заменены на единый `TMC2209_Init()`
-- Двойное управление ENN — теперь только через `TMC2209_SetEnabled()`
+- Устаревшие `TMC2209_InitStart()` / `TMC2209_Poll()` — заменены на единый `tmc2209_motor_init()`
+- Двойное управление ENN — теперь только через `tmc2209_motor_set_enabled()`
 
 ---
 
@@ -244,7 +245,6 @@ FW_SonarMotorDriver/
 ├── include/
 │   ├── board.h              — выводы, MOTOR_DRIVER_MODE, TMC2209_MICROSTEPS, PID
 │   ├── stm32f1xx_hal_conf.h — конфигурация HAL
-│   ├── tmc2209.h            — единый API управления двигателем (app-level facade)
 │   ├── biss_c.h             — BiSS C интерфейс
 │   ├── usb_cdc.h            — USB CDC API
 │   ├── usbd_conf.h          — USB Device Library конфиг
@@ -254,17 +254,15 @@ FW_SonarMotorDriver/
 │   └── cmd_parser.h         — парсер команд en/dis/t/t±/kp/ki/kd/op/debug/scan/stop
 ├── src/
 │   ├── main.c               — init, главный цикл, контроллер, телеметрия
-│   ├── tmc2209.c            — TMC2209 + STEP/DIR + UART motion, единый владелец ENN
-│   ├── tmc2209_port_stm32_hal.c — transport/port для UART и GPIO ENN
 │   ├── biss_c.c             — BiSS C: SPI + DMA, CRC6, разбор кадра
 │   ├── pid.c                — PID с anti-windup
 │   ├── cmd_parser.c         — парсер команд (USB + UART)
-│   ├── uart.c               — UART (USART1 PA9/PA10): кольцевые буферы, TX/RX по прерываниям
+│   ├── uart.c               — UART (USART1 PA9/PA10): RX DMA circular + IDLE, TX DMA
 │   ├── usb_cdc.c            — USB CDC, кольцевые буферы, readline
 │   ├── usbd_conf.c          — низкоуровневая привязка USB к STM32
 │   └── usbd_desc.c          — USB дескрипторы устройства
 ├── lib/
-│   └── tmc2209/             — core library TMC2209 (reusable)
+│   └── tmc2209/             — библиотека драйвера TMC2209 (core API + STM32 port + motor facade)
 └── tools/
     └── read_serial.py       — утилита чтения COM-порта
 ```
@@ -273,10 +271,9 @@ FW_SonarMotorDriver/
 | Модуль           | Содержание                                                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------- |
 | `board.h`        | Константы: выводы, MOTOR_DRIVER_MODE, TMC2209_MICROSTEPS (32), PID, буферы                        |
-| `main.c`         | BSP, clock, TIM2, DWT, init, CL/OL контроллер, команды, телеметрия. Вызывает только TMC2209_* |
-| `tmc2209`        | TMC2209 app-level facade: init/config, STEP/DIR (TIM4), UART motion (VACTUAL), ENN |
-| `tmc2209_port_`* | UART и GPIO ENN для lib/tmc2209                                                                   |
-| `lib/tmc2209`    | Core library: регистры, UART, enable, VACTUAL, диагностика (без таймера/STEP)                     |
+| `main.c`         | BSP, clock, TIM2, DWT, init, CL/OL контроллер, команды, телеметрия. Вызывает tmc2209_motor_*      |
+| `lib/tmc2209`    | Изолированная библиотека: регистры, UART, порт STM32, генерация STEP/DIR (TIM4), диагностика      |
+| `uart.c`         | Драйвер USART1: RX через DMA Circular + IDLE line, TX через DMA. Кольцевые буферы.                |
 | `biss_c`         | BiSS C: SPI + DMA, разбор кадра, CRC6                                                             |
 | `pid`            | PID с anti-windup и ограничением выхода                                                           |
 | `cmd_parser`     | Парсер команд (en, dis, t=, t=±, kp=, ki=, kd=, op=, debug=, scan=, stop)                         |
@@ -337,7 +334,9 @@ pio run --target upload   # Прошивка
 
 ### Непрерывное вращение
 
-Режим бесконечного вращения мотора с максимальной скоростью (`MAX_SPEED_DEG_S`) без PID-регулирования. Мотор шагает на `MAX_STEPS_PER_POLL` шагов каждый тик (1 мс) в заданном направлении.
+Режим бесконечного вращения мотора или движения с заданной скоростью без PID-регулирования. 
+В режиме **STEP_DIR**: мотор шагает на `steps` шагов КАЖДЫЙ тик (1 мс) в заданном направлении. 
+В режиме **UART**: устанавливается соответствующий `VACTUAL`.
 
 **Команды:**
 
@@ -577,15 +576,15 @@ if (BiSS_IsReady()) st = BiSS_GetResult(&rd);  // rd.position, rd.angle_deg
 ### TMC2209 Facade (единый API управления двигателем)
 
 ```c
-TMC2209_Init();
-TMC2209_SetEnabled(1);   // Включить (ENN = LOW)
-TMC2209_MoveSteps(10);   // 10 шагов CW
-TMC2209_MoveSteps(-5);   // 5 шагов CCW
-TMC2209_Stop();          // Остановить
-TMC2209_SetCurrent(800, 400);   // run_ma, hold_ma
-TMC2209_SetMicrosteps(32);
-TMC2209_GetDrvStatus(&st);
-TMC2209_GetVersion(&ver);
+tmc2209_motor_init();
+tmc2209_motor_set_enabled(1);   // Включить (ENN = LOW)
+tmc2209_motor_move_steps(10);   // Установка скорости 10 шагов/тик (для control loop)
+tmc2209_motor_move_steps(-5);   // Установка скорости -5 шагов/тик
+tmc2209_motor_stop();          // Остановить
+tmc2209_motor_set_current(800, 400);   // run_ma, hold_ma
+tmc2209_motor_set_microsteps(32);
+tmc2209_motor_get_drv_status(&st);
+tmc2209_motor_get_version(&ver);
 ```
 
 ### PID

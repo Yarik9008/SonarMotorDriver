@@ -8,8 +8,9 @@
 
 #include <stdint.h>
 
-/* Инициализация USART1 и DMA. Вызывать один раз при старте. */
-void UART_Init(void);
+/* Инициализация USART1 и DMA. Вызывать один раз при старте. 
+ * Возвращает 0 при успехе, -1 при ошибке. */
+int UART_Init(void);
 
 /* Постановка данных в очередь TX. Возвращает 0 — OK, 1 — буфер переполнен. */
 uint8_t UART_Transmit(const uint8_t *buf, uint16_t len);
