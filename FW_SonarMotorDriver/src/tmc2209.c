@@ -28,6 +28,11 @@ static UART_HandleTypeDef  s_huart;
 static tmc2209_hal_ctx_t   s_hal;
 static uint8_t            s_tmc_ready = 0;
 
+/* Последние успешно применённые настройки (обновляются только при успехе). */
+static uint16_t s_run_ma    = TMC2209_IRUN_MA;
+static uint16_t s_hold_ma   = TMC2209_IHOLD_MA;
+static uint16_t s_microsteps = TMC2209_MICROSTEPS;
+
 static int tmc2209_init_blocking(void)
 {
     s_huart.Instance          = TMC2209_UART;
@@ -38,7 +43,8 @@ static int tmc2209_init_blocking(void)
     s_huart.Init.Mode         = UART_MODE_TX_RX;
     s_huart.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
     s_huart.Init.OverSampling = UART_OVERSAMPLING_16;
-    HAL_UART_Init(&s_huart);
+    if (HAL_UART_Init(&s_huart) != HAL_OK)
+        return -1;
 
     s_hal.huart       = &s_huart;
     s_hal.en_port     = ENABLE_PORT;
@@ -113,13 +119,13 @@ static void stepdir_init(void)
     htim_step.Init.Period            = 999;
     htim_step.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
     htim_step.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;   /* Preload: обновление ARR на границе периода */
-    HAL_TIM_PWM_Init(&htim_step);
+    if (HAL_TIM_PWM_Init(&htim_step) != HAL_OK) return;
 
     sConfigOC.OCMode       = TIM_OCMODE_PWM1;
     sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
     sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
     sConfigOC.Pulse        = PULSE_TICKS;
-    HAL_TIM_PWM_ConfigChannel(&htim_step, &sConfigOC, TIM_CHANNEL_3);
+    if (HAL_TIM_PWM_ConfigChannel(&htim_step, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) return;
 
     g_pwm_running = 0;
     g_cur_dir     = -1;
@@ -280,17 +286,47 @@ void TMC2209_SetEnabled(uint8_t enabled)
 int TMC2209_SetCurrent(uint16_t run_ma, uint16_t hold_ma)
 {
     if (!s_tmc_ready) return -1;
-    return (tmc2209_set_current(&s_drv, run_ma, hold_ma) == TMC2209_OK) ? 0 : -1;
+    /* Допустимый диапазон: 0..3000 мА (ограничение разумное для большинства моторов) */
+    if (run_ma > 3000 || hold_ma > 3000) return -2;
+    if (tmc2209_set_current(&s_drv, run_ma, hold_ma) != TMC2209_OK) return -3;
+    /* Обновляем кэш только после успешного применения */
+    s_run_ma  = run_ma;
+    s_hold_ma = hold_ma;
+    return 0;
 }
+
+/* Допустимые значения микрошагов для TMC2209 */
+static const uint16_t k_valid_mstep[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
+#define VALID_MSTEP_COUNT (sizeof(k_valid_mstep) / sizeof(k_valid_mstep[0]))
 
 int TMC2209_SetMicrosteps(uint16_t microsteps)
 {
     if (!s_tmc_ready) return -1;
-    return (tmc2209_set_microsteps(&s_drv, microsteps) == TMC2209_OK) ? 0 : -1;
+    /* Принимаем только значения из фиксированного набора */
+    uint8_t valid = 0;
+    for (uint8_t i = 0; i < VALID_MSTEP_COUNT; i++) {
+        if (k_valid_mstep[i] == microsteps) { valid = 1; break; }
+    }
+    if (!valid) return -2;
+    if (tmc2209_set_microsteps(&s_drv, microsteps) != TMC2209_OK) return -3;
+    s_microsteps = microsteps;
+    return 0;
+}
+
+int TMC2209_GetConfig(TMC2209_Config *cfg)
+{
+    if (!cfg) return -1;
+    cfg->run_ma     = s_run_ma;
+    cfg->hold_ma    = s_hold_ma;
+    cfg->microsteps = s_microsteps;
+    cfg->mode       = TMC2209_GetControlMode();
+    cfg->ready      = s_tmc_ready;
+    return 0;
 }
 
 void TMC2209_MoveSteps(int32_t steps)
 {
+    if (!s_tmc_ready) return;
 #if MOTOR_DIR_INVERT
     steps = -steps;
 #endif
@@ -323,10 +359,21 @@ void TMC2209_MoveVelocity(int32_t velocity)
 
 void TMC2209_Stop(void)
 {
+    if (!s_tmc_ready) return;
 #if MOTOR_DRIVER_MODE == MOTOR_DRIVER_MODE_STEP_DIR_VAL
     stepdir_stop();
 #else
     tmc2209_stop(&s_drv);
+#endif
+}
+
+uint8_t TMC2209_IsMoving(void)
+{
+#if MOTOR_DRIVER_MODE == MOTOR_DRIVER_MODE_STEP_DIR_VAL
+    return g_pwm_running;
+#else
+    /* В UART-режиме читаем текущую командную скорость VACTUAL из структуры драйвера */
+    return s_tmc_ready && (s_drv.vactual != 0);
 #endif
 }
 

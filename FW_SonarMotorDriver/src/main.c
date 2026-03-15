@@ -1,4 +1,9 @@
-/* main.c — Позиционное управление шаговым двигателем (PID + BiSS-C энкодер). */
+/* main.c — Позиционное управление шаговым двигателем (PID + BiSS-C энкодер).
+ *
+ * Основные режимы: Closed-Loop (PID по энкодеру), Open-Loop (при сбое энкодера).
+ * Команды через USB CDC и UART: en/dis, t=X, kp/ki/kd=X, scan, stop.
+ * Таймер TIM2: 1 кГц — опрос энкодера, PID, телеметрия.
+ */
 
 #include "stm32f1xx_hal.h"
 #include "board.h"
@@ -126,8 +131,10 @@ static uint8_t Init_Poll(void)
         break;
 
     case INIT_MOTOR_DRIVER:
-        TMC2209_Init();
-        s_init = INIT_POLL_TIMER;
+        if (TMC2209_Init() == 0) {
+            s_init = INIT_POLL_TIMER;
+        }
+        /* Если -1, остаёмся здесь: init motor subsystem failed */
         break;
 
     case INIT_POLL_TIMER:
@@ -631,6 +638,60 @@ static void ProcessCommand(const Cmd_Result *cmd)
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         SendResponse("ok:stop\r\n");
         break;
+
+    case CMD_SET_IRUN: {
+        TMC2209_Config cfg; TMC2209_GetConfig(&cfg);
+        int r = TMC2209_SetCurrent(cmd->irun_ma, cfg.hold_ma);
+        if      (r ==  0) SendResponse("ok:irun=%u\r\n", (unsigned)cmd->irun_ma);
+        else if (r == -1) SendResponse("err:not ready\r\n");
+        else if (r == -2) SendResponse("err:bad arg\r\n");
+        else              SendResponse("err:apply failed\r\n");
+        break;
+    }
+
+    case CMD_SET_IHOLD: {
+        TMC2209_Config cfg; TMC2209_GetConfig(&cfg);
+        int r = TMC2209_SetCurrent(cfg.run_ma, cmd->ihold_ma);
+        if      (r ==  0) SendResponse("ok:ihold=%u\r\n", (unsigned)cmd->ihold_ma);
+        else if (r == -1) SendResponse("err:not ready\r\n");
+        else if (r == -2) SendResponse("err:bad arg\r\n");
+        else              SendResponse("err:apply failed\r\n");
+        break;
+    }
+
+    case CMD_SET_ICUR: {
+        int r = TMC2209_SetCurrent(cmd->irun_ma, cmd->ihold_ma);
+        if      (r ==  0) SendResponse("ok:icur=%u,%u\r\n",
+                              (unsigned)cmd->irun_ma, (unsigned)cmd->ihold_ma);
+        else if (r == -1) SendResponse("err:not ready\r\n");
+        else if (r == -2) SendResponse("err:bad arg\r\n");
+        else              SendResponse("err:apply failed\r\n");
+        break;
+    }
+
+    case CMD_SET_MSTEP: {
+        /* Смена микрошагов безопасна при остановленном моторе */
+        if (TMC2209_IsMoving()) {
+            SendResponse("err:busy stop motor first\r\n");
+            break;
+        }
+        int r = TMC2209_SetMicrosteps(cmd->microsteps);
+        if      (r ==  0) SendResponse("ok:mstep=%u\r\n", (unsigned)cmd->microsteps);
+        else if (r == -1) SendResponse("err:not ready\r\n");
+        else if (r == -2) SendResponse("err:bad arg (1/2/4/8/16/32/64/128/256)\r\n");
+        else              SendResponse("err:apply failed\r\n");
+        break;
+    }
+
+    case CMD_GET_MCFG: {
+        TMC2209_Config cfg;
+        TMC2209_GetConfig(&cfg);
+        SendResponse("mode=%s run=%u hold=%u microsteps=%u ready=%u\r\n",
+            (cfg.mode == TMC2209_CONTROL_MODE_STEP_DIR) ? "STEP_DIR" : "UART",
+            (unsigned)cfg.run_ma, (unsigned)cfg.hold_ma,
+            (unsigned)cfg.microsteps, (unsigned)cfg.ready);
+        break;
+    }
 
     case CMD_UNKNOWN:
         SendResponse("err:unknown\r\n");

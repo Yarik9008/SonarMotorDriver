@@ -1,4 +1,9 @@
-/* cmd_parser.c — Парсер команд (en/dis/t=/kp=/ki=/kd=/op=). */
+/* cmd_parser.c — Парсер текстовых команд.
+ *
+ * Форматы: en, dis, stop, t=X, t=+/-, kp=/ki=/kd=X, op=N, debug=0|1,
+ *          scan=start,end,step,delay или scan=start,+/-,step,delay,
+ *          irun <mA>, ihold <mA>, icur <run> <hold>, mstep <value>, mcfg.
+ */
 
 #include "cmd_parser.h"
 #include <string.h>
@@ -26,6 +31,12 @@ static int parse_int(const char **p, int32_t *out)
     return 0;
 }
 
+static const char *skip_spaces(const char *p)
+{
+    while (*p == ' ' || *p == '\t') p++;
+    return p;
+}
+
 uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
 {
     if (!line || !out || line[0] == '\0')
@@ -40,6 +51,9 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     out->scan_delay_ms = 0;
     out->scan_infinite_dir = 0;
     out->continuous_dir = 0;
+    out->irun_ma = 0;
+    out->ihold_ma = 0;
+    out->microsteps = 0;
 
     if (strcmp(line, "en") == 0) {
         out->type = CMD_ENABLE;
@@ -154,6 +168,60 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
         out->scan_step = st;
         out->scan_delay_ms = (uint16_t)d;
         out->scan_infinite_dir = inf_dir;
+        return 1;
+    }
+
+    /* mcfg — вывод текущей конфигурации драйвера */
+    if (strcmp(line, "mcfg") == 0) {
+        out->type = CMD_GET_MCFG;
+        return 1;
+    }
+
+    /* irun <mA> — установить ток движения */
+    if (strncmp(line, "irun ", 5) == 0) {
+        const char *p = skip_spaces(line + 5);
+        int32_t v;
+        if (parse_int(&p, &v) != 0 || v < 0 || v > 3000)
+            return 0;
+        out->type    = CMD_SET_IRUN;
+        out->irun_ma = (uint16_t)v;
+        return 1;
+    }
+
+    /* ihold <mA> — установить ток удержания */
+    if (strncmp(line, "ihold ", 6) == 0) {
+        const char *p = skip_spaces(line + 6);
+        int32_t v;
+        if (parse_int(&p, &v) != 0 || v < 0 || v > 3000)
+            return 0;
+        out->type     = CMD_SET_IHOLD;
+        out->ihold_ma = (uint16_t)v;
+        return 1;
+    }
+
+    /* icur <run_mA> <hold_mA> — установить оба тока */
+    if (strncmp(line, "icur ", 5) == 0) {
+        const char *p = skip_spaces(line + 5);
+        int32_t r, h;
+        if (parse_int(&p, &r) != 0 || r < 0 || r > 3000)
+            return 0;
+        p = skip_spaces(p);
+        if (parse_int(&p, &h) != 0 || h < 0 || h > 3000)
+            return 0;
+        out->type     = CMD_SET_ICUR;
+        out->irun_ma  = (uint16_t)r;
+        out->ihold_ma = (uint16_t)h;
+        return 1;
+    }
+
+    /* mstep <value> — установить микрошаг */
+    if (strncmp(line, "mstep ", 6) == 0) {
+        const char *p = skip_spaces(line + 6);
+        int32_t v;
+        if (parse_int(&p, &v) != 0 || v < 0)
+            return 0;
+        out->type       = CMD_SET_MSTEP;
+        out->microsteps = (uint16_t)v;
         return 1;
     }
 

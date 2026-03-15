@@ -114,18 +114,7 @@ void UART_Init(void)
 
 void HAL_UART_MspInit(UART_HandleTypeDef *h)
 {
-    /* TMC2209 (USART2) — только GPIO, без DMA и IRQ */
-    if (h->Instance == TMC2209_UART) {
-        __HAL_RCC_USART2_CLK_ENABLE();
-        __HAL_RCC_GPIOA_CLK_ENABLE();
-        GPIO_InitTypeDef gpio = {0};
-        gpio.Pin = TMC2209_UART_TX_PIN; gpio.Mode = GPIO_MODE_AF_PP;
-        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
-        gpio.Pin = TMC2209_UART_RX_PIN; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_NOPULL;
-        HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
-        return;
-    }
+    if (h->Instance != UART_INSTANCE) return;
 
     if (h->Instance != UART_INSTANCE) return;
 
@@ -177,12 +166,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef *h)
 
 void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
 {
-    if (h->Instance == TMC2209_UART) {
-        __HAL_RCC_USART2_CLK_DISABLE();
-        HAL_GPIO_DeInit(TMC2209_UART_TX_PORT, TMC2209_UART_TX_PIN);
-        HAL_GPIO_DeInit(TMC2209_UART_RX_PORT, TMC2209_UART_RX_PIN);
-        return;
-    }
+    if (h->Instance != UART_INSTANCE) return;
     if (h->Instance != UART_INSTANCE) return;
     HAL_DMA_DeInit(&hdma_uart_rx);
     HAL_DMA_DeInit(&hdma_uart_tx);

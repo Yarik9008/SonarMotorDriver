@@ -1,7 +1,12 @@
-/* pid.c — Реализация PID-регулятора. */
+/* pid.c — Реализация PID-регулятора.
+ *
+ * Формула: out = kp*e + ki*integral(e) + kd*de/dt.
+ * Антивинд Ap: при выходе на насыщение integral не накапливается.
+ */
 
 #include "pid.h"
 
+/* Сброс накопленного интеграла и истории. Вызывать при смене режима (CL↔OL). */
 void PID_Reset(PID_State *pid)
 {
     if (!pid)
@@ -11,6 +16,7 @@ void PID_Reset(PID_State *pid)
     pid->initialized = 0;
 }
 
+/* Обновление: вычисляет выход по ошибке и dt. Выход ограничен output_min/max. */
 float PID_Update(PID_State *pid, float error, float dt)
 {
     if (!pid || dt <= 0.0f)

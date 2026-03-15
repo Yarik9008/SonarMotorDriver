@@ -1,7 +1,7 @@
-/* tmc2209_port_stm32_hal.h — STM32 HAL platform adapter for TMC2209 library.
+/* tmc2209_port_stm32_hal.h — HAL-адаптер для lib/tmc2209.
  *
- * Provides tmc2209_io_t callback implementations using STM32 HAL
- * (UART, GPIO, DWT cycle counter).
+ * Предоставляет реализации колбэков tmc2209_io_t на основе STM32 HAL
+ * (UART, GPIO, DWT счётчик циклов).
  */
 
 #ifndef TMC2209_PORT_STM32_HAL_H
@@ -14,6 +14,7 @@
 extern "C" {
 #endif
 
+/* Контекст HAL-порта: UART, пины, системная частота, режим half-duplex. */
 typedef struct {
     UART_HandleTypeDef *huart;
     GPIO_TypeDef       *en_port;
@@ -23,8 +24,7 @@ typedef struct {
     void (*debug_fn)(const char *str);
 } tmc2209_hal_ctx_t;
 
-/* Fill tmc2209_io_t with STM32 HAL callback implementations.
- * hal_ctx must remain valid for the lifetime of the driver. */
+/* Заполняет tmc2209_io_t реализациями колбэков. hal_ctx должен быть валиден весь срок жизни драйвера. */
 void tmc2209_port_stm32_hal_fill_io(tmc2209_io_t *io, tmc2209_hal_ctx_t *hal);
 
 #ifdef __cplusplus

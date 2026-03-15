@@ -22,36 +22,47 @@
 
 #include <stdint.h>
 
+/* Типы распознанных команд */
 typedef enum {
-    CMD_NONE,
-    CMD_ENABLE,
-    CMD_DISABLE,
-    CMD_SET_TARGET,
-    CMD_SET_KP,
-    CMD_SET_KI,
-    CMD_SET_KD,
-    CMD_SET_OUTPUT_PERIOD,
-    CMD_SET_DEBUG,
-    CMD_SCAN,
-    CMD_STOP,
-    CMD_CONTINUOUS,
-    CMD_UNKNOWN
+    CMD_NONE,           /* не распознано / пусто */
+    CMD_ENABLE,         /* en */
+    CMD_DISABLE,        /* dis */
+    CMD_SET_TARGET,     /* t=X (град) */
+    CMD_SET_KP,         /* kp=X */
+    CMD_SET_KI,         /* ki=X */
+    CMD_SET_KD,         /* kd=X */
+    CMD_SET_OUTPUT_PERIOD, /* op=N (мс) */
+    CMD_SET_DEBUG,      /* debug=0|1 */
+    CMD_SCAN,           /* scan=s,e,st,d или scan=s,+/-,st,d */
+    CMD_STOP,           /* stop */
+    CMD_CONTINUOUS,     /* t=+ или t=- (бесконечное вращение) */
+    CMD_SET_IRUN,       /* irun <mA> */
+    CMD_SET_IHOLD,      /* ihold <mA> */
+    CMD_SET_ICUR,       /* icur <run_mA> <hold_mA> */
+    CMD_SET_MSTEP,      /* mstep <value> */
+    CMD_GET_MCFG,       /* mcfg */
+    CMD_UNKNOWN         /* неизвестная команда */
 } Cmd_Type;
 
+/* Результат разбора команды */
 typedef struct {
     Cmd_Type type;
     float kp, ki, kd;
-    float target;
-    uint16_t output_period_ms;
-    uint8_t debug;
-    float scan_start;
-    float scan_end;
-    float scan_step;
-    uint16_t scan_delay_ms;
-    int8_t scan_infinite_dir; /* 0 = zigzag, +1 = scan,+, -1 = scan,- */
-    int8_t continuous_dir;   /* +1 = t=+, -1 = t=- */
+    float target;           /* целевая позиция (град) */
+    uint16_t output_period_ms;  /* период телеметрии, мс */
+    uint8_t debug;          /* режим отладки: 0=краткий, 1=полный */
+    float scan_start;       /* начало сканирования */
+    float scan_end;         /* конец сканирования (zigzag) */
+    float scan_step;        /* шаг сканирования */
+    uint16_t scan_delay_ms; /* задержка между шагами */
+    int8_t scan_infinite_dir;  /* 0=zigzag, +1=вперёд, -1=назад */
+    int8_t continuous_dir;    /* +1=t=+, -1=t=- */
+    uint16_t irun_ma;       /* ток движения, мА (irun/icur) */
+    uint16_t ihold_ma;      /* ток удержания, мА (ihold/icur) */
+    uint16_t microsteps;    /* микрошаг (mstep) */
 } Cmd_Result;
 
+/* Парсит строку line, заполняет out. Возвращает 1 при успехе, 0 при ошибке. */
 uint8_t Cmd_Parse(const char *line, Cmd_Result *out);
 
 #endif /* CMD_PARSER_H */

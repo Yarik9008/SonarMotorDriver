@@ -1,4 +1,8 @@
-/* usb_cdc.c — USB CDC (виртуальный COM-порт): колбэки, кольцевые буферы TX/RX. */
+/* usb_cdc.c — USB CDC (виртуальный COM-порт).
+ *
+ * Колбэки USBD_CDC, кольцевые буферы TX/RX.
+ * Специальная команда DFU в первых трёх байтах пакета — перезагрузка в bootloader.
+ */
 
 #include "usb_cdc.h"
 #include "usbd_core.h"
@@ -137,6 +141,7 @@ void USB_CDC_Task(void)
 {
     if (!USB_CDC_IsConnected()) {
         tx_head = tx_tail = 0;
+        rx_head = rx_tail = 0;
         return;
     }
 

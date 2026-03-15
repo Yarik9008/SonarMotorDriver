@@ -1,4 +1,8 @@
-/* biss_c.c — Драйвер BiSS C для энкодеров LENZ IRS (SPI + DMA + THVD1452). */
+/* biss_c.c — Драйвер BiSS C для энкодеров LENZ IRS.
+ *
+ * SPI + DMA, приём/передача через RS-485 трансивер THVD1452 (DE/RE).
+ * Протокол: Start, Ack, 24 бита позиции, Err, Warn, 6 бит CRC.
+ */
 
 #include "biss_c.h"
 #include "board.h"
