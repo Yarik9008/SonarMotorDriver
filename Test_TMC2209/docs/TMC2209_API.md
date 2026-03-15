@@ -1,5 +1,8 @@
 # TMC2209 Library — API Reference
 
+> [!IMPORTANT]
+> **Питание драйвера (VS):** Линию питания драйвера VS необходимо **ВСЕГДА** подключать с дополнительным электролитическим конденсатором (100–470 мкФ) для стабильной работы и защиты от пробоя.
+
 ## 1. Overview
 
 Platform-agnostic C library for Trinamic TMC2209 stepper motor driver (UART interface).

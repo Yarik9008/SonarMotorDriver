@@ -1,20 +1,18 @@
-/*
- * cmd_parser.h — Парсер коротких USB-команд.
+/**
+ * @file cmd_parser.h
+ * @brief Парсер текстовых команд, поступающих по UART/USB.
  *
- * Команды:
- *   en           — включить драйвер + PID (удержание текущей позиции)
- *   dis          — выключить
- *   t=X          — целевая позиция (градусы)
- *   t=+          — бесконечное вращение в положительном направлении
- *   t=-          — бесконечное вращение в отрицательном направлении
- *   kp=X, ki=X, kd=X — коэффициенты PID
- *   op=N         — период телеметрии (мс), 0 = выкл
- *   debug=0|1    — режим телеметрии: 0 = cp,ec; 1 = полная
- *   scan=s,e,st,d — сканирование сектора (start,end,step,delay_ms), zigzag до stop
- *   scan=s,+,st,d — бесконечное сканирование вперёд (start,step,delay_ms)
- *   scan=s,-,st,d — бесконечное сканирование назад  (start,step,delay_ms)
- *   stop         — остановить любое движение мотора
- *   DFU          — перезагрузка (обрабатывается в usb_cdc.c)
+ * Модуль преобразует текстовые строки в структурированные команды управления
+ * мотором, параметрами ПИД-регулятора, режимами сканирования и настройками драйвера.
+ *
+ * Список поддерживаемых команд:
+ * - en / dis : включение/выключение силовой части и ПИД.
+ * - t=X      : установка целевого угла в градусах.
+ * - t=+ / t- : непрерывное вращение.
+ * - kp/ki/kd=X : настройка коэффициентов регулятора.
+ * - op=N     : период выдачи телеметрии в мс (0 - выкл).
+ * - scan=... : запуск автоматического сканирования (секторного или непрерывного).
+ * - irun/ihold/mstep : прямая настройка параметров чипа TMC2209.
  */
 
 #ifndef CMD_PARSER_H
@@ -22,26 +20,28 @@
 
 #include <stdint.h>
 
-/* Типы распознанных команд */
+/**
+ * @brief Типы распознаваемых команд.
+ */
 typedef enum {
-    CMD_NONE,           /* не распознано / пусто */
-    CMD_ENABLE,         /* en */
-    CMD_DISABLE,        /* dis */
-    CMD_SET_TARGET,     /* t=X (град) */
-    CMD_SET_KP,         /* kp=X */
-    CMD_SET_KI,         /* ki=X */
-    CMD_SET_KD,         /* kd=X */
-    CMD_SET_OUTPUT_PERIOD, /* op=N (мс) */
-    CMD_SET_DEBUG,      /* debug=0|1 */
-    CMD_SCAN,           /* scan=s,e,st,d или scan=s,+/-,st,d */
-    CMD_STOP,           /* stop */
-    CMD_CONTINUOUS,     /* t=+ или t=- (бесконечное вращение) */
-    CMD_SET_IRUN,       /* irun <mA> */
-    CMD_SET_IHOLD,      /* ihold <mA> */
-    CMD_SET_ICUR,       /* icur <run_mA> <hold_mA> */
-    CMD_SET_MSTEP,      /* mstep <value> */
-    CMD_GET_MCFG,       /* mcfg */
-    CMD_UNKNOWN         /* неизвестная команда */
+    CMD_NONE,               ///< Пустая строка или ошибка
+    CMD_ENABLE,             ///< Включить мотор (en)
+    CMD_DISABLE,            ///< Выключить мотор (dis)
+    CMD_SET_TARGET,         ///< Установка позиции (t=X)
+    CMD_SET_KP,             ///< Настройка Kp (kp=X)
+    CMD_SET_KI,             ///< Настройка Ki (ki=X)
+    CMD_SET_KD,             ///< Настройка Kd (kd=X)
+    CMD_SET_OUTPUT_PERIOD,  ///< Период телеметрии (op=N)
+    CMD_SET_DEBUG,          ///< Режим отладки (debug=0|1)
+    CMD_SCAN,               ///< Режим сканирования (scan=...)
+    CMD_STOP,               ///< Экстренная остановка (stop)
+    CMD_CONTINUOUS,         ///< Непрерывное вращение (t=+/t=-)
+    CMD_SET_IRUN,           ///< Ток движения (irun mA)
+    CMD_SET_IHOLD,          ///< Ток удержания (ihold mA)
+    CMD_SET_ICUR,           ///< Установка обоих токов (icur mA mA)
+    CMD_SET_MSTEP,          ///< Микрошаг (mstep N)
+    CMD_GET_MCFG,           ///< Запрос конфигурации TMC2209 (mcfg)
+    CMD_UNKNOWN             ///< Команда не распознана
 } Cmd_Type;
 
 /* Результат разбора команды */

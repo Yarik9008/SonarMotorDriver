@@ -1,15 +1,17 @@
-/* Test_TMC2209 — USB CDC CLI example using TMC2209 library.
+/* Test_TMC2209 — UART CLI example using TMC2209 library (STM32F103C8).
  *
- * Demonstrates driver init, register I/O, motor control,
- * and diagnostic output over USB virtual COM port.
+ * Ported from STM32F446RE + USB CDC reference implementation.
+ * CLI via USART1 (PA9=TX, PA10=RX), TMC2209 via USART2 (PA2=TX, PA3=RX).
+ *
+ * ВНИМАНИЕ: Линию питания драйвера VS необходимо ВСЕГДА подключать с 
+ * дополнительным электролитическим конденсатором (100–470 мкФ)!
  *
  * Commands: i m<N> ms<N> ir<N> ih<N> s e d st t v a r diag c p u h
  */
 
 #include "board.h"
-#include "usb_cdc.h"
 #include "tmc2209/tmc2209.h"
-#include "tmc2209_port_stm32_hal.h"
+#include "tmc2209/tmc2209_port_stm32_hal.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -27,6 +29,7 @@ typedef enum { APP_MODE_UART = 0, APP_MODE_STEP_DIR } app_mode_t;
 static tmc2209_t          s_drv;
 static tmc2209_hal_ctx_t  s_hal_ctx;
 static UART_HandleTypeDef s_huart_tmc;
+static UART_HandleTypeDef s_huart_cli;
 static TIM_HandleTypeDef  s_htim_step;
 
 static app_mode_t s_mode          = APP_MODE_UART;
@@ -47,14 +50,14 @@ static void step_pwm_start(uint32_t steps_per_sec);
 static void step_pwm_stop(void);
 static void app_init_driver(void);
 
-/* ---- USB CDC helpers ---- */
+/* ---- CLI helpers (USART1) ---- */
 
 static void tx(const char *s)
 {
-    USB_CDC_Transmit((const uint8_t *)s, (uint16_t)strlen(s));
+    HAL_UART_Transmit(&s_huart_cli, (uint8_t *)s, (uint16_t)strlen(s), 100);
 }
 
-static void debug_to_usb(const char *s) { tx(s); }
+static void debug_to_cli(const char *s) { tx(s); }
 
 /* ==== STEP/DIR PWM (application-level, not part of TMC2209 library) ==== */
 
@@ -100,9 +103,7 @@ static void step_pin_as_pwm(void)
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin       = STEP_PIN;
     gpio.Mode      = GPIO_MODE_AF_PP;
-    gpio.Pull      = GPIO_NOPULL;
     gpio.Speed     = GPIO_SPEED_FREQ_HIGH;
-    gpio.Alternate = STEP_TIM_AF;
     HAL_GPIO_Init(STEP_PORT, &gpio);
 }
 
@@ -247,17 +248,26 @@ static void output_telemetry(void)
     } else tx("PWM_SCALE=?\r\n");
 }
 
-/* ==== CLI command processor ==== */
+/* ==== CLI command processor (USART1, polled byte-by-byte) ==== */
 
 static void process_cmd(void)
 {
-    if (!USB_CDC_IsConnected()) return;
+    uint8_t ch;
+    static uint16_t ptr = 0;
 
-    uint16_t n = USB_CDC_ReadLine(cmd, CMD_BUF_SIZE);
-    if (n == 0) return;
-    cmd[n] = '\0';
+    if (HAL_UART_Receive(&s_huart_cli, &ch, 1, 0) != HAL_OK) return;
+
+    if (ch == '\r' || ch == '\n') {
+        if (ptr == 0) return;
+        cmd[ptr] = '\0';
+        ptr = 0;
+    } else {
+        if (ptr < CMD_BUF_SIZE - 1) cmd[ptr++] = ch;
+        return;
+    }
 
     const char *mode_str = (s_mode == APP_MODE_UART) ? "UA" : "SD";
+    uint16_t n = (uint16_t)strlen(cmd);
 
     if (cmd[0] == 'h' && n == 1) {
         tx("i  init\r\n"
@@ -403,41 +413,39 @@ static void process_cmd(void)
         tx("cs loop (s=stop)\r\n");
     }
     else {
-        tx("h\r\n");
+        tx("?\r\n");
     }
 }
 
-/* ==== HAL UART callbacks (board-specific, called by HAL internally) ==== */
+/* ==== HAL UART MspInit (board-specific GPIO for both UARTs) ==== */
 
 void HAL_UART_MspInit(UART_HandleTypeDef *h)
 {
-    if (h->Instance != TMC2209_UART) return;
-    __HAL_RCC_USART2_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-
     GPIO_InitTypeDef gpio = {0};
-    gpio.Pin       = TMC2209_UART_TX_PIN;
-    gpio.Mode      = GPIO_MODE_AF_PP;
-    gpio.Pull      = GPIO_NOPULL;
-    gpio.Speed     = GPIO_SPEED_FREQ_HIGH;
-    gpio.Alternate = GPIO_AF7_USART2;
-    HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
-
-    gpio.Pin  = TMC2209_UART_RX_PIN;
-    gpio.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
-
-    HAL_NVIC_SetPriority(USART2_IRQn, IRQ_PRIO_TMC_UART, 0);
-    HAL_NVIC_EnableIRQ(USART2_IRQn);
-}
-
-void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
-{
-    if (h->Instance != TMC2209_UART) return;
-    __HAL_RCC_USART2_CLK_DISABLE();
-    HAL_GPIO_DeInit(TMC2209_UART_TX_PORT, TMC2209_UART_TX_PIN);
-    HAL_GPIO_DeInit(TMC2209_UART_RX_PORT, TMC2209_UART_RX_PIN);
-    HAL_NVIC_DisableIRQ(USART2_IRQn);
+    if (h->Instance == TMC2209_UART) {
+        __HAL_RCC_USART2_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        gpio.Pin   = TMC2209_UART_TX_PIN;
+        gpio.Mode  = GPIO_MODE_AF_PP;
+        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
+        gpio.Pin   = TMC2209_UART_RX_PIN;
+        gpio.Mode  = GPIO_MODE_INPUT;
+        gpio.Pull  = GPIO_PULLUP;
+        HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
+    }
+    else if (h->Instance == CLI_UART) {
+        __HAL_RCC_USART1_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        gpio.Pin   = CLI_UART_TX_PIN;
+        gpio.Mode  = GPIO_MODE_AF_PP;
+        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(CLI_UART_TX_PORT, &gpio);
+        gpio.Pin   = CLI_UART_RX_PIN;
+        gpio.Mode  = GPIO_MODE_INPUT;
+        gpio.Pull  = GPIO_PULLUP;
+        HAL_GPIO_Init(CLI_UART_RX_PORT, &gpio);
+    }
 }
 
 /* ==== Hardware init ==== */
@@ -449,7 +457,6 @@ static void gpio_hw_init(void)
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin   = ENABLE_PIN;
     gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-    gpio.Pull  = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(ENABLE_PORT, &gpio);
     gpio.Pin = DIR_PIN;
@@ -469,6 +476,16 @@ static void uart_hw_init(void)
     s_huart_tmc.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
     s_huart_tmc.Init.OverSampling = UART_OVERSAMPLING_16;
     HAL_UART_Init(&s_huart_tmc);
+
+    s_huart_cli.Instance          = CLI_UART;
+    s_huart_cli.Init.BaudRate     = CLI_UART_BAUDRATE;
+    s_huart_cli.Init.WordLength   = UART_WORDLENGTH_8B;
+    s_huart_cli.Init.StopBits     = UART_STOPBITS_1;
+    s_huart_cli.Init.Parity       = UART_PARITY_NONE;
+    s_huart_cli.Init.Mode         = UART_MODE_TX_RX;
+    s_huart_cli.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+    s_huart_cli.Init.OverSampling = UART_OVERSAMPLING_16;
+    HAL_UART_Init(&s_huart_cli);
 }
 
 /* ==== Driver init helper ==== */
@@ -499,41 +516,32 @@ static void app_init_driver(void)
     }
 }
 
-/* ==== Clock config ==== */
+/* ==== Clock config (HSI, кварца нет) ==== */
 
 static void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef osc = {0};
-    osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-    osc.HSEState       = RCC_HSE_ON;
-    osc.PLL.PLLState   = RCC_PLL_ON;
-    osc.PLL.PLLSource  = RCC_PLLSOURCE_HSE;
-    osc.PLL.PLLM       = 4;
-    osc.PLL.PLLN       = 168;
-    osc.PLL.PLLP       = RCC_PLLP_DIV2;
-    osc.PLL.PLLQ       = 7;
-    osc.PLL.PLLR       = 2;
+    osc.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
+    osc.HSIState            = RCC_HSI_ON;
+    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    osc.PLL.PLLState        = RCC_PLL_ON;
+    osc.PLL.PLLSource       = RCC_PLLSOURCE_HSI_DIV2;  /* HSI/2 = 4 МГц */
+    osc.PLL.PLLMUL          = RCC_PLL_MUL12;           /* 4 * 12 = 48 МГц */
     HAL_RCC_OscConfig(&osc);
 
     RCC_ClkInitTypeDef clk = {0};
     clk.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                         RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+                          RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     clk.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
     clk.AHBCLKDivider  = RCC_SYSCLK_DIV1;
-    clk.APB1CLKDivider = RCC_HCLK_DIV4;
-    clk.APB2CLKDivider = RCC_HCLK_DIV2;
-    HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5);
-
-    RCC_PeriphCLKInitTypeDef pclk = {0};
-    pclk.PeriphClockSelection = RCC_PERIPHCLK_CLK48;
-    pclk.Clk48ClockSelection  = RCC_CLK48CLKSOURCE_PLLQ;
-    HAL_RCCEx_PeriphCLKConfig(&pclk);
+    clk.APB1CLKDivider = RCC_HCLK_DIV2;
+    clk.APB2CLKDivider = RCC_HCLK_DIV1;
+    HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_1);
 }
 
 /* ==== IRQ handlers ==== */
 
-void SysTick_Handler(void)  { HAL_IncTick(); }
-void USART2_IRQHandler(void) { HAL_UART_IRQHandler(&s_huart_tmc); }
+void SysTick_Handler(void) { HAL_IncTick(); }
 
 /* ==== main ==== */
 
@@ -546,50 +554,39 @@ int main(void)
     gpio_hw_init();
     uart_hw_init();
     step_tim_init();
-    USB_CDC_Init();
 
-    /* Platform context for TMC2209 port */
     s_hal_ctx.huart       = &s_huart_tmc;
     s_hal_ctx.en_port     = ENABLE_PORT;
     s_hal_ctx.en_pin      = ENABLE_PIN;
     s_hal_ctx.sysclk_hz   = SYSCLK_HZ;
     s_hal_ctx.half_duplex = 0;
-    s_hal_ctx.debug_fn    = debug_to_usb;
+    s_hal_ctx.debug_fn    = debug_to_cli;
 
-    /* Initial driver init */
+    tx("Test_TMC2209 F103 Start\r\n");
+
+    HAL_Delay(TMC2209_POWERON_DELAY_MS);
     app_init_driver();
+    if (!s_drv_ready) {
+        tx("retry init...\r\n");
+        HAL_Delay(TMC2209_INIT_RETRY_DELAY_MS);
+        app_init_driver();
+    }
 
-    uint8_t  greeted     = 0;
     uint32_t last_cs_tick = 0;
 
     while (1) {
-        USB_CDC_Task();
-
-        if (USB_CDC_IsConnected()) {
-            if (s_continuous_cs) {
-                uint32_t now = HAL_GetTick();
-                if ((uint32_t)(now - last_cs_tick) >= CS_INTERVAL_MS) {
-                    last_cs_tick = now;
-                    tmc2209_drv_status_t ds;
-                    tmc2209_result_t r = tmc2209_get_drv_status(&s_drv, &ds);
-                    snprintf(rsp, sizeof(rsp), "cs:%u%s\r\n",
-                             (r == TMC2209_OK) ? ds.cs_actual : 0,
-                             (r == TMC2209_OK) ? "" : " ?");
-                    tx(rsp);
-                }
+        if (s_continuous_cs) {
+            uint32_t now = HAL_GetTick();
+            if ((uint32_t)(now - last_cs_tick) >= CS_INTERVAL_MS) {
+                last_cs_tick = now;
+                tmc2209_drv_status_t ds;
+                tmc2209_result_t r = tmc2209_get_drv_status(&s_drv, &ds);
+                snprintf(rsp, sizeof(rsp), "cs:%u%s\r\n",
+                         (r == TMC2209_OK) ? ds.cs_actual : 0,
+                         (r == TMC2209_OK) ? "" : " ?");
+                tx(rsp);
             }
-            if (!greeted) {
-                tx("TMC2209 ready. h for help\r\n");
-                if (s_drv_ready)
-                    tx("init ok\r\n");
-                else
-                    tx("init FAIL (use 'i' to retry)\r\n");
-                greeted = 1;
-            }
-            process_cmd();
-        } else {
-            greeted = 0;
-            s_continuous_cs = 0;
         }
+        process_cmd();
     }
 }

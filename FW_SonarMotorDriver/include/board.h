@@ -1,4 +1,11 @@
-/* board.h — Аппаратная конфигурация платы (STM32F103C8 + THVD1452 + LENZ IRS). */
+/**
+ * @file board.h
+ * @brief Аппаратная конфигурация и параметры системы.
+ *
+ * Файл содержит определения выводов (GPIO), параметры тактирования, настройки периферии
+ * (UART, SPI, TIM) и конфигурационные константы для алгоритмов управления (PID, TMC2209).
+ * Является центральной точкой настройки аппаратной части проекта.
+ */
 
 #ifndef BOARD_H
 #define BOARD_H
@@ -47,8 +54,9 @@
 #define MOTOR_DRIVER_MODE               MOTOR_DRIVER_MODE_STEP_DIR_VAL
 
 /* -------- TIM4 + TMC2209 — шаговый двигатель -------- */
+/* Внимание: VS питание драйвера ОБЯЗАТЕЛЬНО подключать с электролитическим конденсатором! */
 #define MOTOR_FULL_STEPS_REV    200U    /* Полных шагов на оборот (200 = 1.8°, 400 = 0.9°) */
-#define TMC2209_MICROSTEPS      32U     /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
+#define TMC2209_MICROSTEPS      256U    /* Микрошаг: 1, 2, 4, 8, 16, 32, 64, 128, 256 */
 #define MOTOR_STEPS_PER_REV     (MOTOR_FULL_STEPS_REV * TMC2209_MICROSTEPS)
 #define MOTOR_DIR_INVERT        1       /* 1 = инвертировать направление */
 #define MAX_SPEED_DEG_S         1200U   /* Максимальная скорость, град/с */
@@ -70,8 +78,8 @@
 #define TMC2209_UART_RX_PIN     GPIO_PIN_3   /* PA3 — USART2_RX → PDN_UART (общая линия) */
 #define TMC2209_UART_ADDR       0U            /* Адрес драйвера (MS1=0, MS2=0) */
 #define TMC2209_RSENSE_OHM      0.11f         /* Резистор измерения тока, Ом */
-#define TMC2209_IRUN_MA         800U          /* Ток при движении, мА (IRUN) */
-#define TMC2209_IHOLD_MA        400U          /* Ток удержания, мА (IHOLD) */
+#define TMC2209_IRUN_MA         600U          /* Ток при движении, мА (IRUN) */
+#define TMC2209_IHOLD_MA        300U          /* Ток удержания, мА (IHOLD) */
 #define TMC2209_REPLY_DELAY_US  500U          /* Задержка TX→RX для TMC2209 UART */
 #define TMC2209_CFG_SENDDELAY   4U            /* SLAVECONF SENDDELAY (0..15) */
 #define TMC2209_TPOWERDOWN      20U           /* Задержка снижения тока (0..255) */
@@ -85,7 +93,7 @@
 #define PID_KP_DEFAULT          0.025f
 #define PID_KI_DEFAULT          0.0f
 #define PID_KD_DEFAULT          0.0f
-#define PID_DEADBAND_DEG        0.1f   /* >= ENCODER_ACCURACY_DEG, иначе дребезг */
+#define PID_DEADBAND_DEG        0.05f  /* >= ENCODER_ACCURACY_DEG, иначе дребезг */
 
 /* -------- USART1 — UART команд и телеметрии (PA9 TX / PA10 RX, DMA) — взаимодействие с ПК -------- */
 #define UART_INSTANCE           USART1
@@ -99,12 +107,7 @@
 /* DMA буфер для UART RX (circular DMA принимает данные сюда напрямую) */
 #define UART_RX_DMA_SIZE        64U
 
-/* -------- USB CDC — виртуальный COM-порт -------- */
-#define USB_ENUM_DELAY_MS       1500U   /* Пауза для энумерации хостом */
-#define USB_TX_RING_SIZE        1024U   /* Размер кольцевого буфера передачи */
-#define USB_RX_RING_SIZE        256U    /* Размер кольцевого буфера приёма */
-
-/* -------- DWT-задержки (блокирующие, только HAL/USB internals) -------- */
+/* -------- DWT-задержки (блокирующие, для HAL) -------- */
 void Delay_Init(void);
 void Delay_ms(uint32_t ms);
 
@@ -113,13 +116,13 @@ void Delay_ms(uint32_t ms);
 #define IWDG_RELOAD             312U                /* 312 / 625 ≈ 500 мс таймаут */
 
 /* -------- NVIC — приоритеты прерываний (меньше = выше) -------- */
-#define IRQ_PRIO_USB            5U
 #define IRQ_PRIO_UART           6U
 #define IRQ_PRIO_TIM_POLL       6U
 #define IRQ_PRIO_STEP           7U
 
 /* -------- Телеметрия -------- */
 #define OUTPUT_PERIOD_MS_DEFAULT 4U    /* Период (мс), 0 = отключить; 4 мс = 250 Гц */
+#define OUTPUT_PERIOD_MS_DEBUG_MIN 20U  /* При debug=1 период не меньше этого (мс), чтобы полные сообщения успевали по UART */
 #define TELEMETRY_DEBUG_DEFAULT 0       /* 0 = cp,ec; 1 = полная телеметрия */
 
 /* Состав телеметрии:
@@ -127,14 +130,16 @@ void Delay_ms(uint32_t ms);
  * debug=1 (полная):  cp(float), tp(float), pe(float), u(float), m("cl"|"ol"), ec(uint8_t), kp(float), ki(float), kd(float) 
  * */
 
-/* -------- Коды ошибок телеметрии -------- */
+/**
+ * @brief Коды ошибок, передаваемые в телеметрии (поле ec).
+ */
 typedef enum {
-    ERR_OK = 0,
-    ERR_BISS_CRC,
-    ERR_BISS_NO_RESP,
-    ERR_BISS_SENSOR,
-    ERR_BISS_WARN,
-    ERR_BISS_SPI,
+    ERR_OK = 0,         ///< Ошибок нет
+    ERR_BISS_CRC,       ///< Ошибка контрольной суммы BiSS-C
+    ERR_BISS_NO_RESP,   ///< Энкодер не отвечает (timeout)
+    ERR_BISS_SENSOR,    ///< Внутренняя ошибка датчика (бит Error)
+    ERR_BISS_WARN,      ///< Предупреждение от датчика (бит Warning)
+    ERR_BISS_SPI,       ///< Ошибка обмена по SPI (HAL Error)
     ERR_COUNT
 } ErrCode;
 

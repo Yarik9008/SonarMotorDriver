@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Тест всех команд Test_TMC2209 и лог TX/RX.
-Надёжный автотест USB CDC: строгие проверки, автоопределение порта.
+Тест всех команд FW_SonarMotorDriver с логом TX/RX и привязкой по времени.
+Покрывает: en, dis, stop, t=X/t=+/t=-, kp/ki/kd, op, debug, scan, irun, ihold, icur, mstep, mcfg.
 """
 
 import sys
@@ -22,11 +22,10 @@ except ImportError:
 BAUD = 115200
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 RX_TIMEOUT = 0.5
-IDLE_TIMEOUT_MS = 80  # завершить чтение если нет данных N мс после хотя бы одной строки
+IDLE_TIMEOUT_MS = 100  # завершить чтение если нет данных N мс после хотя бы одной строки
 
-
-def _normalize(s: str) -> str:
-    return " ".join(s.split()).strip()
+# Полный зигзаг 0..180° шаг 10° задержка 100 мс: 37 позиций × 100 мс ≈ 3.7 с + время движения ≈ 30 с
+SCAN_FULL_DURATION_SEC = 30
 
 
 def _join_lines(lines: list[str]) -> str:
@@ -35,111 +34,52 @@ def _join_lines(lines: list[str]) -> str:
 
 # --- Проверки (checker) возвращают (ok: bool, fail_reason: str) ---
 
-def check_help(lines: list[str]) -> tuple[bool, str]:
+def check_ok(lines: list[str]) -> tuple[bool, str]:
+    """Любой ответ с ok: считается успехом."""
     text = _join_lines(lines)
-    if "init" in text and "move" in text and "telemetry" in text:
+    if "ok:" in text:
         return True, ""
-    return False, f"неполный help: {lines[:3]!r}"
+    if "err:" in text:
+        return False, f"ожидалось ok:, получено err: — {text[:100]}"
+    return False, f"нет ok: в ответе: {lines[:5]!r}"
 
 
-def check_init(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "init ok" in text or "init OK" in text.lower():
-        return True, ""
-    if "init FAIL" in text or "init fail" in text.lower():
-        return False, "init завершился с ошибкой"
-    if "init" in text:
-        return False, "ожидалось 'init ok', получено: " + text[:80]
-    return False, f"нет ответа init: {lines!r}"
-
-
-def check_version(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "transport error" in text:
-        return False, "IOIN read failed (transport error)"
-    if "IC=0x21 OK" in text or "IC=0x21 ok" in text.lower():
-        return True, ""
-    if "IC=" in text:
-        return False, f"неверная версия (ожидается 0x21 OK): {text[:80]}"
-    return False, f"нет IC= в ответе: {lines!r}"
-
-
-def check_status(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "transport error" in text:
-        return False, "DRV_STATUS read failed"
-    if "DRV=0x" in text or "DRV=0X" in text:
-        return True, ""
-    return False, f"нет DRV= или transport error: {text[:80]}"
-
-
-def check_telemetry(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    # Ключевые регистры не должны содержать "?"
-    fail_regs = [r for r in ["GSTAT=?", "IFCNT=?", "IOIN=?", "DRV_STATUS=?"] if r in text]
-    if fail_regs:
-        return False, f"регистры не прочитаны: {', '.join(fail_regs)}"
-    if "GSTAT=" in text and ("IFCNT=" in text or "IOIN=" in text):
-        return True, ""
-    return False, f"неполная телеметрия: {text[:120]}"
-
-
-def check_on(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "on" in text.split():
-        return True, ""
-    return False, f"нет 'on': {lines!r}"
-
-
-def check_off(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "off" in text.split():
-        return True, ""
-    return False, f"нет 'off': {lines!r}"
-
-
-def check_move(expected: str) -> Callable[[list[str]], tuple[bool, str]]:
-    def _check(ln: list[str]) -> tuple[bool, str]:
-        t = _join_lines(ln)
-        if f"={expected}" in t or f"UA={expected}" in t or f"SD={expected}" in t:
+def check_ok_prefix(prefix: str) -> Callable[[list[str]], tuple[bool, str]]:
+    """Проверяет наличие ok:<prefix> в ответе."""
+    def _check(lines: list[str]) -> tuple[bool, str]:
+        text = _join_lines(lines)
+        if f"ok:{prefix}" in text or f"ok: {prefix}" in text:
             return True, ""
-        return False, f"ожидалось ={expected}: {ln!r}"
+        if "err:" in text:
+            return False, f"ожидалось ok:{prefix}, получено err: — {text[:100]}"
+        return False, f"нет ok:{prefix} в ответе: {text[:100]}"
     return _check
 
 
-def check_stop(lines: list[str]) -> tuple[bool, str]:
+def check_mcfg(lines: list[str]) -> tuple[bool, str]:
+    """mcfg возвращает mode=... run=... hold=... microsteps=... ready=..."""
     text = _join_lines(lines)
-    if "stop" in text.split():
+    if "mode=" in text and ("run=" in text or "hold=" in text):
         return True, ""
-    return False, f"нет 'stop': {lines!r}"
+    if "err:" in text:
+        return False, f"mcfg вернул err: — {text[:100]}"
+    return False, f"неполный ответ mcfg: {text[:100]}"
 
 
-def check_mode_sd(lines: list[str]) -> tuple[bool, str]:
+def check_telemetry(lines: list[str]) -> tuple[bool, str]:
+    """Телеметрия: cp=... ec=... (debug=0) или полная (debug=1)."""
     text = _join_lines(lines)
-    if "mode:SD" in text:
+    if "cp:" in text or "ec:" in text:
         return True, ""
-    return False, f"нет mode:SD: {lines!r}"
+    return False, f"нет телеметрии cp/ec: {text[:100]}"
 
 
-def check_mode_ua(lines: list[str]) -> tuple[bool, str]:
+def check_err_unknown(lines: list[str]) -> tuple[bool, str]:
+    """Ожидаем err:unknown для неизвестной команды."""
     text = _join_lines(lines)
-    if "mode:UA" in text:
+    if "err:unknown" in text:
         return True, ""
-    return False, f"нет mode:UA: {lines!r}"
-
-
-def check_cs_start(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "cs loop" in text:
-        return True, ""
-    return False, f"нет 'cs loop': {lines!r}"
-
-
-def check_cs_stop(lines: list[str]) -> tuple[bool, str]:
-    text = _join_lines(lines)
-    if "stop" in text.split():
-        return True, ""
-    return False, f"ожидалось 'stop', получено: {lines!r}"
+    return False, f"ожидалось err:unknown: {text[:80]}"
 
 
 @dataclass
@@ -147,17 +87,19 @@ class TestCase:
     cmd: str
     name: str
     checker: Callable[[list[str]], tuple[bool, str]]
-    wait_extra_ms: int = 0  # для команд с долгим выводом (t, h)
+    wait_extra_ms: int = 0
+    delay_after_ms: int = 0   # пауза после команды (для scan, t=±)
+    sleep_after_sec: float = 0  # ожидание после ответа (для полного теста сканирования)
 
 
 class Logger:
-    """Логгер с выводом в файл и консоль."""
+    """Логгер с выводом в файл и консоль, привязка по времени."""
 
     def __init__(self, log_path: Path):
         self.log_path = log_path
         self.f = open(log_path, "w", encoding="utf-8")
-        self.f.write(f"# Test_TMC2209 command log — {datetime.now().isoformat()}\n")
-        self.f.write("# TX = отправлено, RX = получено\n\n")
+        self.f.write(f"# FW_SonarMotorDriver command test log — {datetime.now().isoformat()}\n")
+        self.f.write("# [HH:MM:SS.mmm] TX = отправлено, RX = получено\n\n")
         self.f.flush()
 
     def log_tx(self, data: str):
@@ -185,22 +127,13 @@ class Logger:
         self.f.close()
 
 
-def find_stm32_port() -> str | None:
-    """Находит COM-порт STM32 (USB CDC)."""
-    for p in list_ports.comports():
-        desc = (p.description or "").lower()
-        hwid = (p.hwid or "").lower()
-        if "0483" in hwid or "stm" in desc or "stm32" in desc or "cdc" in desc:
-            return p.device
-    return None
-
-
-def send_cmd(ser: serial.Serial, cmd: str, logger: Logger, idle_ms: float = IDLE_TIMEOUT_MS / 1000,
+def send_cmd(ser: serial.Serial, cmd: str, logger: Logger,
+             idle_ms: float = IDLE_TIMEOUT_MS / 1000,
              wait_extra_ms: int = 0) -> list[str]:
     """
     Отправляет команду и возвращает список строк ответа.
-    Перед отправкой очищает входной буфер. Использует idle timeout:
-    завершает чтение, если после хотя бы одной строки линия молчит idle_ms секунд.
+    Использует idle timeout: завершает чтение, если после хотя бы одной строки
+    линия молчит idle_ms секунд.
     """
     ser.reset_input_buffer()
 
@@ -211,7 +144,7 @@ def send_cmd(ser: serial.Serial, cmd: str, logger: Logger, idle_ms: float = IDLE
     lines: list[str] = []
     buf = b""
     last_data_time = time.monotonic()
-    t_end = last_data_time + 3.0  # общий таймаут 3 сек
+    t_end = last_data_time + 3.0
 
     while time.monotonic() < t_end:
         n = ser.in_waiting
@@ -220,9 +153,7 @@ def send_cmd(ser: serial.Serial, cmd: str, logger: Logger, idle_ms: float = IDLE
             buf += chunk
             last_data_time = time.monotonic()
 
-        # Парсим строки (CR, LF, CRLF)
         while True:
-            # Ищем первый разделитель
             pos_cr = buf.find(b"\r")
             pos_lf = buf.find(b"\n")
             if pos_cr == -1 and pos_lf == -1:
@@ -241,7 +172,6 @@ def send_cmd(ser: serial.Serial, cmd: str, logger: Logger, idle_ms: float = IDLE
                     lines.append(text)
                     logger.log_rx(text)
 
-        # Idle timeout: если уже есть строки и линия молчит
         if lines and not ser.in_waiting:
             elapsed = time.monotonic() - last_data_time
             if elapsed >= idle_ms:
@@ -258,39 +188,57 @@ def send_cmd(ser: serial.Serial, cmd: str, logger: Logger, idle_ms: float = IDLE
     return lines
 
 
-def resolve_port(cli_port: str | None) -> tuple[str, bool]:
-    """
-    Определяет порт: CLI > авто > ошибка.
-    Возвращает (port, auto_detected).
-    """
-    if cli_port:
-        return cli_port.strip(), False
-    found = find_stm32_port()
-    if found:
-        return found, True
-    return "", False
+def find_stm32_port() -> str | None:
+    """Пытается найти COM-порт STM32."""
+    for p in list_ports.comports():
+        desc = (p.description or "").lower()
+        hwid = (p.hwid or "").lower()
+        if "0483" in hwid or "stm" in desc or "stm32" in desc or "ch340" in hwid or "cp210" in hwid:
+            return p.device
+    return None
 
 
-def run_tests(ser: serial.Serial, logger: Logger) -> list[tuple[str, str, bool, str, list[str]]]:
-    """
-    Выполняет тесты. Возвращает список (name, cmd, ok, fail_reason, lines).
-    """
+def run_tests(ser: serial.Serial, logger: Logger, full_scan: bool = True) -> list[tuple[str, str, bool, str, list[str]]]:
+    """Выполняет тесты. Возвращает список (name, cmd, ok, fail_reason, lines)."""
     test_cases: list[TestCase] = [
-        TestCase("h", "help", check_help),
-        TestCase("i", "init", check_init, wait_extra_ms=500),
-        TestCase("h", "help after init", check_help),
-        TestCase("v", "version", check_version),
-        TestCase("st", "status", check_status),
-        TestCase("t", "telemetry", check_telemetry, wait_extra_ms=700),
-        TestCase("e", "enable", check_on),
-        TestCase("m100", "move 100", check_move("100")),
-        TestCase("m0", "move 0", check_move("0")),
-        TestCase("s", "stop", check_stop),
-        TestCase("d", "disable", check_off),
-        TestCase("e", "enable again", check_on),
-        TestCase("p", "STEP/DIR mode", check_mode_sd),
-        TestCase("u", "UART mode", check_mode_ua),
-        TestCase("c", "cs loop start", check_cs_start),
+        # Базовые команды
+        TestCase("dis", "disable", check_ok),
+        TestCase("en", "enable", check_ok_prefix("en")),
+        TestCase("t=90", "target 90°", check_ok_prefix("t="), wait_extra_ms=150),
+        TestCase("t=+", "continuous +", check_ok_prefix("t=+")),
+        TestCase("stop", "stop", check_ok_prefix("stop"), delay_after_ms=100),
+        TestCase("t=-", "continuous -", check_ok_prefix("t=-")),
+        TestCase("stop", "stop after t=-", check_ok_prefix("stop")),
+        TestCase("t=0", "target 0°", check_ok_prefix("t=")),
+        # PID: рекомендуемые из прошивки (board.h). Сначала Kp в 2 раза меньше, затем исходный
+        TestCase("kp=0.0125", "kp половинный (0.0125)", check_ok_prefix("kp=")),
+        TestCase("ki=0", "ki=0", check_ok_prefix("ki=")),
+        TestCase("kd=0", "kd=0", check_ok_prefix("kd=")),
+        TestCase("kp=0.025", "kp исходный (0.025)", check_ok_prefix("kp=")),
+        # Телеметрия (рекомендуемые: op=4, debug=0)
+        TestCase("op=0", "op=0 (выкл телеметрия)", check_ok_prefix("op=")),
+        TestCase("op=4", "op=4 (250 Гц)", check_ok_prefix("op=")),
+        TestCase("debug=0", "debug=0", check_ok_prefix("debug=")),
+        TestCase("debug=1", "debug=1", check_ok_prefix("debug=")),
+        # Сканирование: полный тест зигзага 0..180°, шаг 10°, задержка 100 мс (ожидание SCAN_FULL_DURATION_SEC)
+        TestCase("scan=0,180,10,100", "scan zigzag full 0..180° step 10° delay 100ms", check_ok, wait_extra_ms=500, sleep_after_sec=SCAN_FULL_DURATION_SEC),
+        TestCase("stop", "stop scan", check_ok_prefix("stop")),
+        # Краткая проверка бесконечного сканирования (сразу stop)
+        TestCase("scan=0,+,10,100", "scan infinite +", check_ok, wait_extra_ms=200),
+        TestCase("stop", "stop scan+", check_ok_prefix("stop")),
+        TestCase("scan=0,-,10,100", "scan infinite -", check_ok, wait_extra_ms=200),
+        TestCase("stop", "stop scan-", check_ok_prefix("stop")),
+        # Ток и микрошаг (рекомендуемые из прошивки: 600, 300, 256)
+        TestCase("irun 600", "irun 600", check_ok_prefix("irun=")),
+        TestCase("ihold 300", "ihold 300", check_ok_prefix("ihold=")),
+        TestCase("icur 600 300", "icur 600 300", check_ok_prefix("icur=")),
+        TestCase("mstep 256", "mstep 256", check_ok_prefix("mstep=")),
+        # Конфигурация
+        TestCase("mcfg", "mcfg", check_mcfg, wait_extra_ms=100),
+        # Неизвестная команда
+        TestCase("xyz123", "unknown cmd → err:unknown", check_err_unknown),
+        # Финал
+        TestCase("dis", "disable final", check_ok),
     ]
 
     results: list[tuple[str, str, bool, str, list[str]]] = []
@@ -305,33 +253,37 @@ def run_tests(ser: serial.Serial, logger: Logger) -> list[tuple[str, str, bool, 
                 logger.log_info("  -> PASS")
             else:
                 logger.log_info(f"  -> FAIL: {reason}")
+            if tc.delay_after_ms:
+                time.sleep(tc.delay_after_ms / 1000.0)
+            sleep_sec = tc.sleep_after_sec
+            if not full_scan and sleep_sec == SCAN_FULL_DURATION_SEC:
+                sleep_sec = 5.0
+            if sleep_sec > 0:
+                logger.log_info(f"  ожидание полного сканирования {sleep_sec:.0f} с...")
+                time.sleep(sleep_sec)
+                logger.log_info(f"  ожидание завершено")
         except Exception as e:
             results.append((tc.name, tc.cmd, False, str(e), []))
             logger.log_info(f"  -> ERROR: {e}")
-
-        if tc.cmd == "c":
-            time.sleep(0.3)
-            logger.log_info("TEST: cs loop stop (cmd='s')")
-            try:
-                lines = send_cmd(ser, "s", logger, idle_ms=0.15)
-                ok, reason = check_cs_stop(lines)
-                results.append(("cs loop stop", "s", ok, reason, lines))
-                logger.log_info("  -> PASS" if ok else f"  -> FAIL: {reason}")
-            except Exception as e:
-                results.append(("cs loop stop", "s", False, str(e), []))
-                logger.log_info(f"  -> ERROR: {e}")
 
     return results
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Тест команд Test_TMC2209 с логом TX/RX")
+    parser = argparse.ArgumentParser(
+        description="Тест всех команд FW_SonarMotorDriver с логом TX/RX (привязка по времени)"
+    )
     parser.add_argument("port", nargs="?", default="COM19", help="COM-порт (по умолчанию COM19)")
     parser.add_argument("--no-test", action="store_true", help="Только лог, без автотеста")
+    parser.add_argument("--no-full-scan", action="store_true", help="Не ждать полный зигзаг сканирования (~30 с), только 5 с")
     parser.add_argument("--log", "-l", help="Путь к лог-файлу")
     args = parser.parse_args()
 
-    port, auto_detected = resolve_port(args.port)
+    port = args.port.strip() if args.port else ""
+    if not port:
+        found = find_stm32_port()
+        port = found or ""
+
     if not port:
         print("Порт не указан и автоопределение не сработало.", file=sys.stderr)
         print("\nДоступные порты:", file=sys.stderr)
@@ -341,10 +293,10 @@ def main() -> int:
         return 1
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = Path(args.log) if args.log else LOG_DIR / f"tmc_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_path = Path(args.log) if args.log else LOG_DIR / f"fw_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logger = Logger(log_path)
 
-    print(f"Порт: {port}" + (" (автоопределён)" if auto_detected else " (задан вручную)"))
+    print(f"Порт: {port}")
     print(f"Скорость: {BAUD}")
     print(f"Лог: {log_path}\n")
 
@@ -362,10 +314,8 @@ def main() -> int:
 
         if args.no_test:
             logger.log_info("Режим лога (--no-test). Вводите команды, Ctrl+C — выход.")
-            logger.log_info("Вывод идёт только из reader thread, без дублирования.\n")
             import threading
-
-            stop_flag = [False]  # list to allow closure mutation
+            stop_flag = [False]
 
             def read_serial():
                 buf = b""
@@ -407,7 +357,7 @@ def main() -> int:
             finally:
                 stop_flag[0] = True
         else:
-            results = run_tests(ser, logger)
+            results = run_tests(ser, logger, full_scan=not args.no_full_scan)
             passed = sum(1 for r in results if r[2])
             total = len(results)
             fails = [(r[0], r[3], r[4]) for r in results if not r[2]]

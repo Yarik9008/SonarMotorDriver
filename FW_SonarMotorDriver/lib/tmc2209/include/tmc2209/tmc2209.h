@@ -1,11 +1,12 @@
-/* tmc2209.h — TMC2209 stepper motor driver library: public API.
+/**
+ * @file tmc2209.h
+ * @brief Основной интерфейс библиотеки для работы с чипом TMC2209.
  *
- * Platform-agnostic UART driver for Trinamic TMC2209.
- * Provides register-level and high-level typed access to all
- * major TMC2209 features: StealthChop, SpreadCycle, CoolStep,
- * StallGuard, OTP, diagnostics, multi-device UART.
- *
- * Not thread-safe. Debug output buffer is shared across instances.
+ * Предоставляет функции для инициализации драйвера, чтения и записи регистров,
+ * управления током, микрошагом, режимами StealthChop/SpreadCycle, а также
+ * функции диагностики (StallGuard, DRV_STATUS).
+ * Библиотека не зависит от платформы; взаимодействие с железом происходит через
+ * колбэки структуры tmc2209_io_t.
  */
 
 #ifndef TMC2209_H

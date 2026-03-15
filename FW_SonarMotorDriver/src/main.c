@@ -1,15 +1,20 @@
-/* main.c — Позиционное управление шаговым двигателем (PID + BiSS-C энкодер).
+/**
+ * @file main.c
+ * @brief Основной модуль приложения. Координация работы всех подсистем.
  *
- * Основные режимы: Closed-Loop (PID по энкодеру), Open-Loop (при сбое энкодера).
- * Команды через USB CDC и UART: en/dis, t=X, kp/ki/kd=X, scan, stop.
- * Таймер TIM2: 1 кГц — опрос энкодера, PID, телеметрия.
+ * Модуль реализует:
+ * - Инициализацию аппаратной части и программных модулей (неблокирующая стейт-машина).
+ * - Главный цикл управления (Control Loop): опрос энкодера, PID-регулятор, управление мотором.
+ * - Обработку команд пользователя через UART.
+ * - Периодический вывод телеметрии.
+ * - Логику автоматического сканирования секторов.
  */
 
 #include "stm32f1xx_hal.h"
 #include "board.h"
 #include "biss_c.h"
-#include "usb_cdc.h"
 #include "tmc2209/tmc2209_motor.h"
+#include "tmc2209/tmc2209_port_stm32_hal.h"
 #include "pid.h"
 #include "cmd_parser.h"
 #include "uart.h"
@@ -60,7 +65,7 @@ static inline float shortest_path_err(float target, float pos)
 static TIM_HandleTypeDef  htim_poll;
 static IWDG_HandleTypeDef hiwdg;
 
-/* --- DWT-задержки (блокирующие, только для HAL/USB internals) --- */
+/* --- DWT-задержки (блокирующие, для HAL) --- */
 
 #define DWT_MS_CYCLES(ms) ((uint32_t)(ms) * (SYSCLK_HZ / 1000U))
 
@@ -81,35 +86,35 @@ void Delay_ms(uint32_t ms)
     }
 }
 
-/* --- Неблокирующая стейт-машина инициализации --- */
-
+/**
+ * @brief Состояния неблокирующей инициализации.
+ */
 typedef enum {
-    INIT_USB_CDC, INIT_UART, INIT_USB_ENUM_WAIT,
-    INIT_BISS_INIT, INIT_BISS_WAIT, INIT_MOTOR_DRIVER,
-    INIT_POLL_TIMER, INIT_IWDG, INIT_DONE
+    INIT_UART,          ///< Инициализация командного порта USART1
+    INIT_BISS_INIT,     ///< Настройка интерфейса энкодера
+    INIT_BISS_WAIT,     ///< Ожидание готовности энкодера после подачи питания
+    INIT_MOTOR_DRIVER,  ///< Инициализация фасада управления мотором (TMC2209)
+    INIT_POLL_TIMER,    ///< Запуск системного таймера опроса (1 кГц)
+    INIT_IWDG,          ///< Запуск сторожевого таймера
+    INIT_DONE           ///< Инициализация завершена
 } InitState;
 
-static InitState s_init = INIT_USB_CDC;
+static InitState s_init = INIT_UART;
 static uint32_t  s_init_t0;
 
+/**
+ * @brief Опрос стейт-машины инициализации.
+ * @return 1, если инициализация завершена, иначе 0.
+ *
+ * Функция вызывается в цикле до тех пор, пока не будут настроены все модули.
+ * Использует DWT-таймер для неблокирующих задержек.
+ */
 static uint8_t Init_Poll(void)
 {
     switch (s_init) {
 
-    case INIT_USB_CDC:
-        USB_CDC_Init();
-        s_init = INIT_UART;
-        break;
-
     case INIT_UART:
-        if (UART_Init() == 0) {
-            s_init_t0 = DWT->CYCCNT;
-            s_init = INIT_USB_ENUM_WAIT;
-        }
-        break;
-
-    case INIT_USB_ENUM_WAIT:
-        if ((DWT->CYCCNT - s_init_t0) >= DWT_MS_CYCLES(USB_ENUM_DELAY_MS))
+        if (UART_Init() == 0)
             s_init = INIT_BISS_INIT;
         break;
 
@@ -131,12 +136,14 @@ static uint8_t Init_Poll(void)
             s_init = INIT_MOTOR_DRIVER;
         break;
 
-    case INIT_MOTOR_DRIVER:
-        if (tmc2209_motor_init() == 0) {
-            s_init = INIT_POLL_TIMER;
+    case INIT_MOTOR_DRIVER: {
+        int r = tmc2209_motor_init();
+        if (r != 0) {
+            SendResponse("err:motor_init=%d\r\n", r);
         }
-        /* Если -1, остаёмся здесь: init motor subsystem failed */
+        s_init = INIT_POLL_TIMER;
         break;
+    }
 
     case INIT_POLL_TIMER:
         PollTimer_Init();
@@ -158,10 +165,15 @@ static uint8_t Init_Poll(void)
     return 0;
 }
 
-/* --- Состояние --- */
+/**
+ * @brief Глобальное состояние системы.
+ */
+typedef enum { 
+    MODE_CL = 0,    ///< Closed-Loop: PID-регулирование по энкодеру
+    MODE_OL = 1     ///< Open-Loop: прямое управление без ОС (счётчик шагов)
+} CtrlMode;
 
-typedef enum { MODE_CL = 0, MODE_OL = 1 } CtrlMode;
-
+/* Состояние PID-регулятора */
 static PID_State g_pid = {
     .kp = PID_KP_DEFAULT, .ki = PID_KI_DEFAULT, .kd = PID_KD_DEFAULT,
     .integral = 0, .prev_error = 0,
@@ -169,37 +181,42 @@ static PID_State g_pid = {
     .initialized = 0
 };
 
-static float    g_target_deg     = 0;
-static uint8_t  g_enabled        = 0;
-static uint16_t g_output_period  = OUTPUT_PERIOD_MS_DEFAULT;
-static uint8_t  g_telem_debug    = TELEMETRY_DEBUG_DEFAULT;
+static float    g_target_deg     = 0;           ///< Целевая позиция (градусы)
+static uint8_t  g_enabled        = 1;           ///< Флаг разрешения работы (движение разрешено)
+static uint16_t g_output_period  = OUTPUT_PERIOD_MS_DEFAULT; ///< Период телеметрии
+static uint8_t  g_telem_debug    = TELEMETRY_DEBUG_DEFAULT;  ///< Флаг расширенной телеметрии
 
-static uint32_t g_enc_raw_prev   = 0xFFFFFFFF;
-static int64_t  g_enc_counts     = 0;
+static uint32_t g_enc_raw_prev   = 0xFFFFFFFF;  ///< Предыдущее "сырое" значение энкодера (для дельты)
+static int64_t  g_enc_counts     = 0;           ///< Накопленный счетчик импульсов (многооборотность)
 
-static float    g_cl_accum       = 0;
-static float    g_last_ctrl      = 0;
+static float    g_cl_accum       = 0;           ///< Накопитель дробных шагов для Closed-Loop
+static float    g_last_ctrl      = 0;           ///< Последнее вычисленное управляющее воздействие
 
-static CtrlMode g_mode           = MODE_CL;
-static uint32_t g_enc_fail_cnt   = 0;
-static float    g_ol_pos         = 0;
-static uint8_t  g_was_outside_db = 0;
-static uint8_t  g_homing         = 0;
-static int8_t   g_cont_dir       = 0;
+static CtrlMode g_mode           = MODE_CL;     ///< Текущий режим управления
+static uint32_t g_enc_fail_cnt   = 0;           ///< Счетчик пропусков данных энкодера
+static float    g_ol_pos         = 0;           ///< Виртуальная позиция для Open-Loop
+static uint8_t  g_was_outside_db = 0;           ///< Флаг выхода из мертвой зоны (для логики доводки)
+static uint8_t  g_homing         = 0;           ///< Флаг процесса выхода в "дом" после инициализации
+static int8_t   g_cont_dir       = 0;           ///< Направление непрерывного вращения (t+/t-)
 
-/* --- Сканирование --- */
-
-typedef enum { SCAN_IDLE, SCAN_MOVING, SCAN_DELAY } ScanState;
+/**
+ * @brief Состояние логики автоматического сканирования.
+ */
+typedef enum { 
+    SCAN_IDLE,      ///< Сканирование не запущено
+    SCAN_MOVING,    ///< Ожидание достижения мотором целевой позиции
+    SCAN_DELAY      ///< Ожидание в целевой позиции (задержка перед следующим шагом)
+} ScanState;
 
 static ScanState g_scan_st       = SCAN_IDLE;
-static float     g_scan_cur      = 0;
-static float     g_scan_start    = 0;
-static float     g_scan_end      = 0;
-static float     g_scan_step     = 0;
-static uint16_t  g_scan_delay_ms = 0;
-static uint16_t  g_scan_delay_cnt= 0;
-static int8_t    g_scan_dir      = 1;
-static int8_t    g_scan_inf      = 0;
+static float     g_scan_cur      = 0;           ///< Текущая целевая точка сканирования
+static float     g_scan_start    = 0;           ///< Начало сектора
+static float     g_scan_end      = 0;           ///< Конец сектора
+static float     g_scan_step     = 0;           ///< Шаг сканирования
+static uint16_t  g_scan_delay_ms = 0;           ///< Время ожидания в точке
+static uint16_t  g_scan_delay_cnt= 0;           ///< Счетчик времени ожидания
+static int8_t    g_scan_dir      = 1;           ///< Текущее направление (1/-1) для зигзага
+static int8_t    g_scan_inf      = 0;           ///< Флаг бесконечного сканирования (направление)
 
 static void DoSteps(int32_t steps)
 {
@@ -231,13 +248,12 @@ int main(void)
                 dma_pend  = 1;
                 enc_ok    = (g_enc_raw_prev != 0xFFFFFFFF);
                 init_done = 1;
+                if (g_enabled) tmc2209_motor_set_enabled(1);
             }
-            USB_CDC_Task();
             UART_Task();
             continue;
         }
 
-        USB_CDC_Task();
         UART_Task();
         tmc2209_motor_task();
         PollCommands();
@@ -268,6 +284,14 @@ int main(void)
 
 /* --- Многооборотная позиция --- */
 
+/**
+ * @brief Обработка данных энкодера и расчет многооборотной позиции.
+ * @param[in] rd Текущее чтение с энкодера.
+ *
+ * Вычисляет разность между текущим и предыдущим значением с учетом переполнения
+ * (rollover) 17-битного счетчика. При первом вызове производит привязку позиции
+ * и расчет целевой точки для плавного старта.
+ */
 static void Encoder_Accumulate(const BiSS_Reading *rd)
 {
     if (g_enc_raw_prev == 0xFFFFFFFF) {
@@ -277,8 +301,6 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
         g_target_deg = pos + shortest_path_err(STARTUP_TARGET_OFFSET_DEG, pos);
         g_ol_pos     = pos;
         g_homing     = 1;
-        g_enabled    = 1;
-        tmc2209_motor_set_enabled(1);
         return;
     }
 
@@ -291,6 +313,13 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
 
 /* --- CL ↔ OL --- */
 
+/**
+ * @brief Управление переключением режимов CL/OL.
+ * @param[in] enc_ok Флаг валидности данных энкодера в текущем тике.
+ *
+ * Если энкодер не отвечает более ENCODER_FAIL_MS, система переходит в Open-Loop.
+ * При восстановлении связи возвращается в Closed-Loop со сбросом PID.
+ */
 static void Mode_Update(uint8_t enc_ok)
 {
     if (enc_ok) {
@@ -311,6 +340,18 @@ static void Mode_Update(uint8_t enc_ok)
 
 /* --- Управление мотором --- */
 
+/**
+ * @brief Основной расчет управляющего воздействия мотора (1 кГц).
+ * @param[in] enc_ok Флаг валидности данных энкодера.
+ *
+ * Реализует:
+ * 1. Остановку, если g_enabled == 0.
+ * 2. Непрерывное вращение (режим t+/t-), если g_cont_dir != 0.
+ * 3. Closed-Loop по PID-алгоритму, если есть данные энкодера.
+ * 4. Open-Loop (программный счетчик шагов), если данных энкодера нет.
+ *
+ * Включает логику "мертвой зоны" (deadband) и доводки до целевой позиции.
+ */
 static void MotorControl_Tick(uint8_t enc_ok)
 {
     if (!g_enabled) {
@@ -424,21 +465,22 @@ static uint32_t g_dropped_tx = 0;
 
 static void TransmitAll(const uint8_t *buf, uint16_t len)
 {
-    if (USB_CDC_IsConnected()) {
-        if (USB_CDC_Transmit(buf, len) != 0) {
-            g_dropped_tx++;
-        }
-    }
     if (UART_Transmit(buf, len) != 0) {
         g_dropped_tx++;
+        return;
     }
+    UART_Task();
 }
 
 static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 {
     static uint16_t cnt = 0;
     if (g_output_period == 0) return;
-    if (++cnt < g_output_period) return;
+    /* Даём коротким CLI-ответам уйти целой строкой, не перемешивая их с телеметрией. */
+    if (UART_TxPending()) return;
+    /* При полной телеметрии (debug=1) используем не меньший период, чтобы длинные строки успевали по UART */
+    uint16_t period = g_telem_debug ? (g_output_period >= OUTPUT_PERIOD_MS_DEBUG_MIN ? g_output_period : OUTPUT_PERIOD_MS_DEBUG_MIN) : g_output_period;
+    if (++cnt < period) return;
     cnt = 0;
 
     char buf[128];
@@ -451,7 +493,7 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
             "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f,drp:%lu\r\n",
             (double)deg, (double)g_target_deg, (double)(g_target_deg - deg),
             (double)g_last_ctrl, (g_mode == MODE_CL) ? "cl" : "ol",
-            (unsigned)ec, (double)g_pid.kp, (double)g_pid.ki, (double)g_pid.kd, g_dropped_tx);
+            (unsigned)ec, (double)g_pid.kp, (double)g_pid.ki, (double)g_pid.kd, (unsigned long)g_dropped_tx);
     else
         len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u\r\n", (double)deg, (unsigned)ec);
 
@@ -472,7 +514,8 @@ static void Heartbeat_Tick(void)
 static void Scan_Tick(void)
 {
     if (g_scan_st != SCAN_DELAY) return;
-
+    /* Задержка в мс: тик 1 кГц, считаем до g_scan_delay_ms включительно */
+    if (g_scan_delay_ms == 0) return; /* не должно быть при валидной команде */
     if (++g_scan_delay_cnt < g_scan_delay_ms) return;
 
     float next;
@@ -512,8 +555,6 @@ static void PollCommands(void)
 {
     char line[64];
     Cmd_Result cmd;
-    if (USB_CDC_ReadLine(line, sizeof(line)) > 0 && Cmd_Parse(line, &cmd))
-        ProcessCommand(&cmd);
     if (UART_ReadLine(line, sizeof(line)) > 0 && Cmd_Parse(line, &cmd))
         ProcessCommand(&cmd);
 }
@@ -599,7 +640,12 @@ static void ProcessCommand(const Cmd_Result *cmd)
         float s = cmd->scan_start, e = cmd->scan_end, step = cmd->scan_step;
         uint16_t d = cmd->scan_delay_ms;
         int8_t inf = cmd->scan_infinite_dir;
-        if ((inf == 0 && (s > e || step <= 0)) || (inf != 0 && step <= 0)) {
+        /* Zigzag: start < end, step > 0, delay > 0. Infinite: step > 0, delay > 0 */
+        if (step <= 0 || d == 0) {
+            SendResponse("err:scan\r\n");
+            break;
+        }
+        if (inf == 0 && s >= e) {
             SendResponse("err:scan\r\n");
             break;
         }
@@ -710,6 +756,7 @@ static void BSP_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_AFIO_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin = LED_PIN; gpio.Mode = GPIO_MODE_OUTPUT_PP; gpio.Speed = GPIO_SPEED_FREQ_LOW;
@@ -735,11 +782,36 @@ static void PollTimer_Init(void)
     HAL_TIM_Base_Init(&htim_poll);
 }
 
+void HAL_TIM_PWM_MspInit(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM4) __HAL_RCC_TIM4_CLK_ENABLE();
+}
+
 void HAL_TIM_Base_MspInit(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM2) __HAL_RCC_TIM2_CLK_ENABLE();
+    if (htim->Instance == TIM4) __HAL_RCC_TIM4_CLK_ENABLE();
 }
 
+void HAL_UART_MspInit(UART_HandleTypeDef *h)
+{
+    if (h->Instance == UART_INSTANCE) {
+        UART_CommandMspInit(h);
+        return;
+    }
+    tmc2209_port_stm32_hal_uart_msp_init(h);
+}
+
+void HAL_UART_MspDeInit(UART_HandleTypeDef *h)
+{
+    if (h->Instance == UART_INSTANCE) {
+        UART_CommandMspDeInit(h);
+        return;
+    }
+    tmc2209_port_stm32_hal_uart_msp_deinit(h);
+}
+
+/* Тактирование от HSI (внутренний генератор 8 МГц), кварца нет */
 static void SystemClock_Config(void)
 {
     RCC_OscInitTypeDef osc = {0};
@@ -747,8 +819,8 @@ static void SystemClock_Config(void)
     osc.HSIState            = RCC_HSI_ON;
     osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     osc.PLL.PLLState        = RCC_PLL_ON;
-    osc.PLL.PLLSource       = RCC_PLLSOURCE_HSI_DIV2;
-    osc.PLL.PLLMUL          = RCC_PLL_MUL12;
+    osc.PLL.PLLSource       = RCC_PLLSOURCE_HSI_DIV2;  /* HSI/2 = 4 МГц */
+    osc.PLL.PLLMUL          = RCC_PLL_MUL12;           /* 4 * 12 = 48 МГц */
     HAL_RCC_OscConfig(&osc);
 
     RCC_ClkInitTypeDef clk = {0};
@@ -759,11 +831,6 @@ static void SystemClock_Config(void)
     clk.APB1CLKDivider = RCC_HCLK_DIV2;
     clk.APB2CLKDivider = RCC_HCLK_DIV1;
     HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_1);
-
-    RCC_PeriphCLKInitTypeDef pclk = {0};
-    pclk.PeriphClockSelection = RCC_PERIPHCLK_USB;
-    pclk.UsbClockSelection    = RCC_USBCLKSOURCE_PLL;
-    HAL_RCCEx_PeriphCLKConfig(&pclk);
 }
 
 void SysTick_Handler(void) { HAL_IncTick(); }

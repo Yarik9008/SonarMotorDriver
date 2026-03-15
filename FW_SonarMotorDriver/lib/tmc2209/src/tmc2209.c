@@ -1,8 +1,12 @@
-/* tmc2209.c — TMC2209 library core implementation.
+/**
+ * @file tmc2209.c
+ * @brief Реализация регистрового взаимодействия и бизнес-логики чипа TMC2209.
  *
- * Platform-agnostic: all hardware access via tmc2209_io_t callbacks.
- * Contains UART protocol, register I/O, shadow registers, init sequence,
- * configuration helpers, diagnostics, OTP, CoolStep, StallGuard, presets.
+ * Модуль реализует протокол UART Trinamic (Single-wire UART):
+ * - Расчет и проверка контрольной суммы (CRC8).
+ * - Формирование пакетов чтения/записи.
+ * - Обработка теневых (shadow) регистров для записи "только для записи" регистров.
+ * - Логика пересчета тока (mA в CS/IRUN).
  */
 
 #include "tmc2209/tmc2209.h"
@@ -150,6 +154,7 @@ tmc2209_result_t tmc2209_read_reg_addr(tmc2209_t *drv, uint8_t addr,
     }
 
     uint8_t crc_fail = 0;
+    /* Standard 8-byte response: [Sync][MasterAddr=0xFF][Reg][Val32][CRC] */
     for (uint8_t off = 0; off + 8 <= n; off++) {
         uint8_t *r = rx_buf + off;
         if (r[0] != TMC2209_SYNC_BYTE)   continue;
@@ -171,6 +176,31 @@ tmc2209_result_t tmc2209_read_reg_addr(tmc2209_t *drv, uint8_t addr,
                  ((uint32_t)r[5] << 8)  |  (uint32_t)r[6];
         drv->last_error = TMC2209_OK;
         return TMC2209_OK;
+    }
+
+    /* 7-byte: полный ответ 8 байт, но один байт (0xFF) потерян при приёме — восстанавливаем и проверяем CRC */
+    if (n >= 7) {
+        for (uint8_t off = 0; off + 7 <= n; off++) {
+            uint8_t *r = rx_buf + off;
+            if (r[0] != TMC2209_SYNC_BYTE || r[1] != reg) continue;
+
+            uint8_t full[8];
+            full[0] = r[0];
+            full[1] = TMC2209_MASTER_ADDR;
+            full[2] = r[1];
+            full[3] = r[2];
+            full[4] = r[3];
+            full[5] = r[4];
+            full[6] = r[5];
+            full[7] = 0;
+            tmc_crc(full, 8);
+            if (full[7] != r[6]) continue;
+
+            *value = ((uint32_t)r[2] << 24) | ((uint32_t)r[3] << 16) |
+                     ((uint32_t)r[4] << 8)  |  (uint32_t)r[5];
+            drv->last_error = TMC2209_OK;
+            return TMC2209_OK;
+        }
     }
 
     if (crc_fail) {

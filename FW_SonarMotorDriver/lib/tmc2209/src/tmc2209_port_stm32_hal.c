@@ -82,6 +82,13 @@ static int port_motor_hw_init(void *ctx)
     HAL_GPIO_Init(hal->dir_port, &gpio);
     HAL_GPIO_WritePin(hal->dir_port, hal->dir_pin, GPIO_PIN_RESET);
 
+    gpio.Pin   = hal->en_pin;
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Pull  = GPIO_NOPULL;
+    HAL_GPIO_Init(hal->en_port, &gpio);
+    HAL_GPIO_WritePin(hal->en_port, hal->en_pin, GPIO_PIN_SET); /* Start disabled */
+
     /* Timer initialization is partially expected to be done via hal->htim_step init 
        but we ensure PWM config here if needed, or just rely on it being ready. */
     if (HAL_TIM_PWM_Init(hal->htim_step) != HAL_OK) return -1;
@@ -133,6 +140,38 @@ static void port_debug_print(const char *str, void *ctx)
 {
     tmc2209_hal_ctx_t *hal = (tmc2209_hal_ctx_t *)ctx;
     if (hal->debug_fn) hal->debug_fn(str);
+}
+
+void tmc2209_port_stm32_hal_uart_msp_init(UART_HandleTypeDef *h)
+{
+    if (h->Instance != TMC2209_UART) {
+        return;
+    }
+
+    __HAL_RCC_USART2_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin   = TMC2209_UART_TX_PIN;
+    gpio.Mode  = GPIO_MODE_AF_PP;
+    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
+
+    gpio.Pin  = TMC2209_UART_RX_PIN;
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
+}
+
+void tmc2209_port_stm32_hal_uart_msp_deinit(UART_HandleTypeDef *h)
+{
+    if (h->Instance != TMC2209_UART) {
+        return;
+    }
+
+    __HAL_RCC_USART2_CLK_DISABLE();
+    HAL_GPIO_DeInit(TMC2209_UART_TX_PORT, TMC2209_UART_TX_PIN);
+    HAL_GPIO_DeInit(TMC2209_UART_RX_PORT, TMC2209_UART_RX_PIN);
 }
 
 void tmc2209_port_stm32_hal_fill_io(tmc2209_io_t *io, tmc2209_hal_ctx_t *hal)

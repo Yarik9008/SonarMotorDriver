@@ -1,4 +1,10 @@
-/* biss_c.h — Драйвер BiSS C для энкодеров LENZ IRS (SPI + DMA + THVD1452). */
+/**
+ * @file biss_c.h
+ * @brief Драйвер протокола BiSS-C для энкодеров LENZ IRS.
+ *
+ * Модуль обеспечивает чтение данных с абсолютных энкодеров по интерфейсу BiSS-C,
+ * используя SPI в качестве транспорта и RS-485 трансивер для физического уровня.
+ */
 
 #ifndef BISS_C_H
 #define BISS_C_H
@@ -12,13 +18,16 @@
 #define BISS_CRC_BITS       6U   /* бит CRC */
 
 /* Результат чтения энкодера */
+/**
+ * @brief Статус чтения энкодера.
+ */
 typedef enum {
-    BISS_OK = 0,         /* успех */
-    BISS_ERR_CRC,        /* ошибка CRC */
-    BISS_ERR_NO_RESPONSE,/* нет ответа от энкодера */
-    BISS_ERR_SENSOR,     /* error bit установлен */
-    BISS_ERR_WARNING,    /* warning bit (данные могут быть неточными) */
-    BISS_ERR_SPI,        /* ошибка SPI/DMA */
+    BISS_OK = 0,            ///< Успешное чтение
+    BISS_ERR_CRC,           ///< Ошибка контрольной суммы кадра
+    BISS_ERR_NO_RESPONSE,   ///< Энкодер не обнаружен на линии
+    BISS_ERR_SENSOR,        ///< Критическая ошибка датчика (бит Error)
+    BISS_ERR_WARNING,       ///< Предупреждение от датчика (бит Warning)
+    BISS_ERR_SPI,           ///< Ошибка периферии SPI или DMA
     BISS_STATUS_COUNT
 } BiSS_Status;
 

@@ -1,4 +1,11 @@
-/* tmc2209_port_stm32_hal.h — STM32 HAL port for lib/tmc2209. */
+/**
+ * @file tmc2209_port_stm32_hal.h
+ * @brief Реализация порта (hardware abstraction layer) для STM32 HAL.
+ *
+ * Модуль связывает абстрактные колбэки библиотеки tmc2209.h с конкретной
+ * периферией STM32: UART, GPIO и таймерами (TIM). Описывает структуру
+ * контекста hal_ctx_t.
+ */
 
 #ifndef TMC2209_PORT_STM32_HAL_H
 #define TMC2209_PORT_STM32_HAL_H
@@ -38,6 +45,10 @@ typedef struct {
 
 /** Fill i/o callbacks with STM32 HAL implementations. */
 void tmc2209_port_stm32_hal_fill_io(tmc2209_io_t *io, tmc2209_hal_ctx_t *hal);
+
+/* HAL MSP helpers for the TMC2209 UART backend (USART2). */
+void tmc2209_port_stm32_hal_uart_msp_init(UART_HandleTypeDef *h);
+void tmc2209_port_stm32_hal_uart_msp_deinit(UART_HandleTypeDef *h);
 
 #ifdef __cplusplus
 }

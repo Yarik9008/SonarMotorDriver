@@ -1,8 +1,9 @@
-/* cmd_parser.c — Парсер текстовых команд.
+/**
+ * @file cmd_parser.c
+ * @brief Реализация парсера текстовых команд.
  *
- * Форматы: en, dis, stop, t=X, t=+/-, kp=/ki=/kd=X, op=N, debug=0|1,
- *          scan=start,end,step,delay или scan=start,+/-,step,delay,
- *          irun <mA>, ihold <mA>, icur <run> <hold>, mstep <value>, mcfg.
+ * Содержит вспомогательные функции для разбора чисел и основную функцию Cmd_Parse,
+ * которая сопоставляет входную строку с предопределенными шаблонами команд.
  */
 
 #include "cmd_parser.h"

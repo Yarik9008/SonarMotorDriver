@@ -1,7 +1,10 @@
-/* tmc2209_motor.h — High-level Motor Facade API for TMC2209.
+/**
+ * @file tmc2209_motor.h
+ * @brief Высокоуровневый фасад (API) для управления шаговым двигателем через TMC2209.
  *
- * This layer manages the motor state, control modes, and backends 
- * (STEP/DIR or UART motion).
+ * Данный модуль абстрагирует низкоуровневые регистры TMC2209 и физический транспорт
+ * (STEP/DIR или UART), предоставляя приложению простой интерфейс: "ехать", "стоять",
+ * "установить ток" и т.д.
  */
 
 #ifndef TMC2209_MOTOR_H
@@ -14,25 +17,30 @@
 extern "C" {
 #endif
 
-/* Control modes */
+/**
+ * @brief Режимы управления движением.
+ */
 typedef enum {
-    TMC2209_MOTOR_CONTROL_STEP_DIR = 0,
-    TMC2209_MOTOR_CONTROL_UART     = 1
+    TMC2209_MOTOR_CONTROL_STEP_DIR = 0, ///< Управление через импульсы STEP/DIR (аппаратный ШИМ)
+    TMC2209_MOTOR_CONTROL_UART     = 1  ///< Управление через регистр VACTUAL по UART
 } tmc2209_motor_mode_t;
 
-/* Motor configuration snapshot */
+/**
+ * @brief Снимок текущей конфигурации мотора.
+ */
 typedef struct {
-    uint16_t             run_ma;
-    uint16_t             hold_ma;
-    uint16_t             microsteps;
-    tmc2209_motor_mode_t mode;
-    uint8_t              ready;
+    uint16_t             run_ma;      ///< Рабочий ток, мА
+    uint16_t             hold_ma;     ///< Ток удержания, мА
+    uint16_t             microsteps;  ///< Дробление шага (1..256)
+    tmc2209_motor_mode_t mode;        ///< Текущий режим (STEP/DIR или UART)
+    uint8_t              ready;       ///< Флаг готовности драйвера
 } tmc2209_motor_config_t;
 
 /* ---- Initialization & Task ---- */
 
 /** 
- * Initialize motor subsystem. 
+ * Initialize motor subsystem without changing the driver enable policy.
+ * The application decides when to call tmc2209_motor_set_enabled().
  * Returns 0 on success, <0 on error. 
  */
 int  tmc2209_motor_init(void);

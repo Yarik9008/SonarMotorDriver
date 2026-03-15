@@ -1,4 +1,14 @@
-/* tmc2209_motor.c — High-level Motor Facade implementation for TMC2209. */
+/**
+ * @file tmc2209_motor.c
+ * @brief Реализация фасада управления мотором.
+ *
+ * Модуль объединяет в себе управление чипом по UART (через tmc2209.c) и
+ * генерацию импульсов STEP/DIR (через tmc2209_port_stm32_hal.c).
+ *
+ * Кэширование: для ускорения работы некоторые параметры (ток, микрошаг)
+ * дублируются в локальных переменных s_run_ma, s_hold_ma и т.д. Также
+ * реализован фоновый опрос статуса чипа (диагностика) с заданным интервалом.
+ */
 
 #include "tmc2209/tmc2209_motor.h"
 #include "tmc2209/tmc2209.h"
@@ -6,13 +16,13 @@
 #include "board.h"
 #include <stdint.h>
 
-/* ---- Internal State ---- */
+/* ---- Внутреннее состояние ---- */
 
-static tmc2209_t          s_drv;
-static UART_HandleTypeDef  s_huart;
-static tmc2209_hal_ctx_t   s_hal;
-static TIM_HandleTypeDef   s_htim_step;
-static uint8_t            s_tmc_ready = 0;
+static tmc2209_t          s_drv;        ///< Контекст чипа TMC2209
+static UART_HandleTypeDef  s_huart;      ///< Дескриптор UART для связи с драйвером
+static tmc2209_hal_ctx_t   s_hal;        ///< HAL-контекст порта
+static TIM_HandleTypeDef   s_htim_step;  ///< Таймер для генерации импульсов STEP
+static uint8_t            s_tmc_ready = 0; ///< Флаг успешной инициализации
 
 /* Diagnostics */
 #define DIAG_INTERVAL_MS   500U
@@ -42,6 +52,11 @@ static void tmc2209_motor_reset_runtime_state(void)
     g_pwm_running = 0;
     g_cur_dir     = -1;
     g_cur_arr     = 0;
+
+    /* Config snapshot */
+    s_run_ma      = TMC2209_IRUN_MA;
+    s_hold_ma     = TMC2209_IHOLD_MA;
+    s_microsteps  = TMC2209_MICROSTEPS;
 
     /* Diagnostics */
     s_diag_last_ms = 0;
@@ -122,7 +137,7 @@ static int tmc2209_init_backend(void)
         s_tmc_ready = 1;
         return 0;
     }
-    return -1;
+    return (int)res;
 }
 
 static void stepdir_steps_internal(int32_t steps)
@@ -161,9 +176,7 @@ static void stepdir_steps_internal(int32_t steps)
 int tmc2209_motor_init(void)
 {
     tmc2209_motor_reset_runtime_state();
-    if (tmc2209_init_backend() != 0) return -1;
-    tmc2209_disable(&s_drv);
-    return 0;
+    return tmc2209_init_backend();
 }
 
 void tmc2209_motor_task(void)
