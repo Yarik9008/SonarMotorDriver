@@ -18,16 +18,16 @@
 #include "board.h"
 #include "line_reader.h"
 
-/* ---- DMA handles ---- */
+/* ---- Дескрипторы DMA ---- */
 
 static DMA_HandleTypeDef hdma_uart_rx;
 static DMA_HandleTypeDef hdma_uart_tx;
 
-/* ---- UART handle ---- */
+/* ---- Дескриптор UART ---- */
 
 static UART_HandleTypeDef huart;
 
-/* ---- RX: DMA circular буфер + программный кольцевой буфер ---- */
+/* ---- Приём: циклический буфер DMA + программный кольцевой буфер ---- */
 
 /* 
  * Кольцевой буфер приема.
@@ -150,7 +150,7 @@ int UART_Init(void)
     return 0;
 }
 
-/* ---- HAL MSP ---- */
+/* ---- Инициализация HAL MSP ---- */
 
 void UART_CommandMspInit(UART_HandleTypeDef *h)
 {
@@ -228,12 +228,12 @@ void UART_CommandMspDeInit(UART_HandleTypeDef *h)
     HAL_NVIC_DisableIRQ(DMA1_Channel5_IRQn);
 }
 
-/* ---- IRQ handlers ---- */
+/* ---- Обработчики прерываний ---- */
 
-/* USART1 IRQ: обрабатываем IDLE, DMA TC от UART периферии */
+/* Прерывание USART1: обработка IDLE и завершения DMA от UART */
 void USART1_IRQHandler(void)
 {
-    /* IDLE line detected — сбрасываем флаг и сливаем новые байты */
+    /* Обнаружена линия IDLE — сброс флага и перенос новых байт в кольцевой буфер */
     if (__HAL_UART_GET_FLAG(&huart, UART_FLAG_IDLE)) {
         __HAL_UART_CLEAR_IDLEFLAG(&huart);
         uart_rx_drain();
@@ -241,35 +241,35 @@ void USART1_IRQHandler(void)
     HAL_UART_IRQHandler(&huart);
 }
 
-/* DMA1_Channel4 — USART1_TX DMA complete */
+/* DMA1_Channel4 — завершение передачи USART1_TX */
 void DMA1_Channel4_IRQHandler(void)
 {
     HAL_DMA_IRQHandler(&hdma_uart_tx);
 }
 
-/* DMA1_Channel5 — USART1_RX DMA (Half/Full Transfer) */
+/* DMA1_Channel5 — DMA приёма USART1_RX (полупередача/полная передача) */
 void DMA1_Channel5_IRQHandler(void)
 {
     HAL_DMA_IRQHandler(&hdma_uart_rx);
     uart_rx_drain();
 }
 
-/* ---- HAL DMA callbacks ---- */
+/* ---- Колбэки HAL DMA ---- */
 
-/* TX DMA complete — продвигаем tail и запускаем следующий чанк */
+/* Завершение передачи по DMA — сдвиг tail и запуск следующего блока */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
 {
     if (h->Instance != UART_INSTANCE) return;
     tx_busy = 0;
-    /* UART_Task() запустит следующую передачу при следующем вызове */
+    /* Следующая передача будет запущена в UART_Task() при следующем вызове */
 }
 
-/* ---- Public API ---- */
+/* ---- Публичный API ---- */
 
 uint8_t UART_Transmit(const uint8_t *buf, uint16_t len)
 {
     if (!s_uart_ready) return 1;
-    if (tx_free() < len) return 1;      /* Нет места — dropped */
+    if (tx_free() < len) return 1;      /* Нет места — данные отброшены */
     for (uint16_t i = 0; i < len; i++) {
         tx_ring[tx_head] = buf[i];
         tx_head = (tx_head + 1U) % UART_TX_RING_SIZE;
@@ -288,7 +288,7 @@ void UART_Task(void)
     uint16_t cnt = tx_count();
     if (!cnt) return;
 
-    /* Contiguous chunk от tail до конца буфера (или до head) */
+    /* Непрерывный блок от tail до конца буфера или до head */
     uint16_t chunk = (tx_tail + cnt > UART_TX_RING_SIZE)
                      ? (UART_TX_RING_SIZE - tx_tail) : cnt;
 

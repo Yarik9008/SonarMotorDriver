@@ -36,86 +36,84 @@ typedef struct {
     uint8_t              ready;       ///< Флаг готовности драйвера
 } tmc2209_motor_config_t;
 
-/* ---- Initialization & Task ---- */
+/* ---- Инициализация и фоновая задача ---- */
 
-/** 
- * Initialize motor subsystem without changing the driver enable policy.
- * The application decides when to call tmc2209_motor_set_enabled().
- * Returns 0 on success, <0 on error. 
+/**
+ * Инициализация подсистемы мотора без изменения политики включения драйвера.
+ * Момент вызова tmc2209_motor_set_enabled() определяет приложение.
+ * Возвращает 0 при успехе, <0 при ошибке.
  */
 int  tmc2209_motor_init(void);
 
-/** 
- * Periodic task to be called from main loop. 
- * Handles non-blocking diagnostics and background maintenance.
+/**
+ * Периодическая задача, вызывать из главного цикла.
+ * Обрабатывает неблокирующую диагностику и фоновое обслуживание.
  */
 void tmc2209_motor_task(void);
 
-/** Returns 1 if motor subsystem is fully initialized and communication is verified. */
+/** Возвращает 1, если подсистема мотора инициализирована и связь с чипом подтверждена. */
 int  tmc2209_motor_is_ready(void);
 
-/* ---- Basic Control ---- */
+/* ---- Базовое управление ---- */
 
-/** 
- * Enable or disable the driver (controls ENN pin). 
- * Returns: 0=OK, -1=Not ready, -2=Bad arg, -3=Apply failed.
+/**
+ * Включить или выключить драйвер (управление выводом ENN).
+ * Возврат: 0=OK, -1=не готов, -2=неверный аргумент, -3=ошибка применения.
  */
 int tmc2209_motor_set_enabled(int enabled);
 
-/** Stop all movement immediately. */
+/** Немедленно остановить любое движение. */
 void tmc2209_motor_stop(void);
 
-/** 
- * Returns 1 if motor is in "commanded-moving" state.
- * (PWM pulses are active or VACTUAL is non-zero).
- * Note: This does not guarantee physical movement if driver is disabled or stalled.
+/**
+ * Возвращает 1, если мотор в состоянии «команда на движение»
+ * (импульсы ШИМ активны или VACTUAL ненулевой).
+ * Примечание: не гарантирует реальное движение при выключенном или застопоренном драйвере.
  */
 int  tmc2209_motor_is_moving(void);
 
-/* ---- Motion Commands ---- */
+/* ---- Команды движения ---- */
 
-/** 
- * Set target movement rate ("steps" per control loop tick).
- * Used by the control loop for continuous motion.
- * In STEP/DIR: sets pulse frequency.
- * In UART: sets VACTUAL.
+/**
+ * Задать скорость движения («шаги» за один тик контура управления).
+ * Используется контуром управления для непрерывного движения.
+ * В режиме STEP/DIR: задаёт частоту импульсов.
+ * В режиме UART: задаёт VACTUAL.
  */
 void tmc2209_motor_move_steps(int32_t steps);
 
-/** 
- * Move with target velocity (UART mode only). 
- */
+/** Движение с заданной скоростью (только режим UART). */
 void tmc2209_motor_move_velocity(int32_t velocity);
 
-/* ---- Configuration ---- */
+/* ---- Конфигурация ---- */
 
-/** 
- * Set run and hold current in mA. 
- * Returns: 0=OK, -1=Not ready, -2=Bad arg, -3=Apply failed.
+/**
+ * Установить ток движения и удержания в мА.
+ * Возврат: 0=OK, -1=не готов, -2=неверный аргумент, -3=ошибка применения.
  */
 int  tmc2209_motor_set_current(uint16_t run_ma, uint16_t hold_ma);
 
-/** 
- * Set microstep resolution (1, 2, 4, ..., 256). 
- * Returns: 0=OK, -1=Not ready, -2=Bad arg, -3=Apply failed.
+/**
+ * Установить разрешение микрошагов (1, 2, 4, …, 256).
+ * Возврат: 0=OK, -1=не готов, -2=неверный аргумент, -3=ошибка применения.
  */
 int  tmc2209_motor_set_microsteps(uint16_t microsteps);
 
-/** Get current motor configuration. */
+/** Получить текущую конфигурацию мотора. */
 void tmc2209_motor_get_config(tmc2209_motor_config_t *cfg);
 
-/** Get control mode (STEP/DIR or UART). */
+/** Получить режим управления (STEP/DIR или UART). */
 tmc2209_motor_mode_t tmc2209_motor_get_control_mode(void);
 
-/* ---- Diagnostics ---- */
+/* ---- Диагностика ---- */
 
-/** Get chip version. */
+/** Получить версию чипа. */
 int  tmc2209_motor_get_version(uint8_t *version);
 
-/** Get full driver status (blocking UART read). */
+/** Получить полный статус драйвера (блокирующее чтение по UART). */
 int  tmc2209_motor_get_drv_status(tmc2209_drv_status_t *st);
 
-/** Get cached driver status (non-blocking, updated by task). */
+/** Получить кэшированный статус драйвера (неблокирующий, обновляется в task). */
 int  tmc2209_motor_get_cached_drv_status(tmc2209_drv_status_t *st);
 
 #ifdef __cplusplus

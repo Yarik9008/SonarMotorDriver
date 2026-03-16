@@ -24,18 +24,18 @@ static tmc2209_hal_ctx_t   s_hal;        ///< HAL-контекст порта
 static TIM_HandleTypeDef   s_htim_step;  ///< Таймер для генерации импульсов STEP
 static uint8_t            s_tmc_ready = 0; ///< Флаг успешной инициализации
 
-/* Diagnostics */
+/* Диагностика */
 #define DIAG_INTERVAL_MS   500U
 static uint32_t            s_diag_last_ms = 0;
 static tmc2209_drv_status_t s_diag_cached = {0};
 static uint8_t             s_diag_valid   = 0;
 
-/* Motor Configuration */
+/* Конфигурация мотора (кэш) */
 static uint16_t s_run_ma    = TMC2209_IRUN_MA;
 static uint16_t s_hold_ma   = TMC2209_IHOLD_MA;
 static uint16_t s_microsteps = TMC2209_MICROSTEPS;
 
-/* STEP/DIR Backend State */
+/* Состояние бэкенда STEP/DIR */
 static uint8_t             g_pwm_running = 0;
 static int8_t              g_cur_dir     = -1;
 static uint32_t            g_cur_arr     = 0;
@@ -44,30 +44,30 @@ static uint32_t            g_cur_arr     = 0;
 #define PULSE_TICKS      (STEP_PULSE_US * TICKS_PER_US)
 #define MIN_PERIOD_TICKS (PULSE_TICKS + 1U)
 
-/* ---- Runtime & Task Management ---- */
+/* ---- Сброс состояния и управление задачей ---- */
 
 static void tmc2209_motor_reset_runtime_state(void)
 {
-    /* Motor Backend (STEP/DIR) */
+    /* Бэкенд STEP/DIR */
     g_pwm_running = 0;
     g_cur_dir     = -1;
     g_cur_arr     = 0;
 
-    /* Config snapshot */
+    /* Снимок конфигурации */
     s_run_ma      = TMC2209_IRUN_MA;
     s_hold_ma     = TMC2209_IHOLD_MA;
     s_microsteps  = TMC2209_MICROSTEPS;
 
-    /* Diagnostics */
+    /* Диагностика */
     s_diag_last_ms = 0;
     s_diag_cached  = (tmc2209_drv_status_t){0};
     s_diag_valid   = 0;
     
-    /* Readiness */
+    /* Готовность */
     s_tmc_ready    = 0;
 }
 
-/* ---- Internal Helpers ---- */
+/* ---- Внутренние вспомогательные функции ---- */
 
 static int map_result(tmc2209_result_t res)
 {
@@ -78,7 +78,7 @@ static int map_result(tmc2209_result_t res)
 
 static int tmc2209_init_backend(void)
 {
-    /* UART Init */
+    /* Инициализация UART */
     s_huart.Instance          = TMC2209_UART;
     s_huart.Init.BaudRate     = TMC2209_UART_BAUDRATE;
     s_huart.Init.WordLength   = UART_WORDLENGTH_8B;
@@ -89,7 +89,7 @@ static int tmc2209_init_backend(void)
     s_huart.Init.OverSampling = UART_OVERSAMPLING_16;
     if (HAL_UART_Init(&s_huart) != HAL_OK) return -1;
 
-    /* Port Context */
+    /* Контекст порта */
     s_hal.huart       = &s_huart;
     s_hal.en_port     = ENABLE_PORT;
     s_hal.en_pin      = ENABLE_PIN;
@@ -97,7 +97,7 @@ static int tmc2209_init_backend(void)
     s_hal.half_duplex = TMC2209_HALF_DUPLEX;
     s_hal.debug_fn    = NULL;
 
-    /* Motor Backend info */
+    /* Параметры бэкенда мотора (STEP/DIR) */
     s_htim_step.Instance = TIM4;
     s_htim_step.Init.Prescaler         = 0;
     s_htim_step.Init.CounterMode       = TIM_COUNTERMODE_UP;
@@ -115,12 +115,12 @@ static int tmc2209_init_backend(void)
     tmc2209_io_t io;
     tmc2209_port_stm32_hal_fill_io(&io, &s_hal);
 
-    /* STEP/DIR HW Init via Port */
+    /* Инициализация железа STEP/DIR через порт */
 #if MOTOR_DRIVER_MODE == MOTOR_DRIVER_MODE_STEP_DIR_VAL
     if (io.motor_hw_init(&s_hal) != 0) return -1;
 #endif
 
-    /* TMC2209 Chip Init */
+    /* Инициализация чипа TMC2209 */
     tmc2209_config_t cfg = TMC2209_DEFAULT_CONFIG;
     cfg.addr           = TMC2209_UART_ADDR;
     cfg.rsense         = TMC2209_RSENSE_OHM;
@@ -171,7 +171,7 @@ static void stepdir_steps_internal(int32_t steps)
     }
 }
 
-/* ---- Initialization ---- */
+/* ---- Инициализация ---- */
 
 int tmc2209_motor_init(void)
 {
@@ -209,7 +209,7 @@ int tmc2209_motor_set_enabled(int enabled)
     return map_result(res);
 }
 
-/* ---- Backend Motion Control ---- */
+/* ---- Управление движением (бэкенд) ---- */
 
 void tmc2209_motor_stop(void)
 {

@@ -1,8 +1,8 @@
-/* tmc2209.c — TMC2209 library core implementation.
+/* tmc2209.c — ядро библиотеки драйвера TMC2209.
  *
- * Platform-agnostic: all hardware access via tmc2209_io_t callbacks.
- * Contains UART protocol, register I/O, shadow registers, init sequence,
- * configuration helpers, diagnostics, OTP, CoolStep, StallGuard, presets.
+ * Кроссплатформенно: доступ к железу только через колбэки tmc2209_io_t.
+ * Содержит UART-протокол, обмен с регистрами, тени регистров, инициализацию,
+ * настройки, диагностику, OTP, CoolStep, StallGuard и предустановки.
  */
 
 #include "tmc2209/tmc2209.h"
@@ -12,7 +12,7 @@
 #define RX_BUF_SIZE 16U
 
 /* ================================================================
- *  Internal helpers
+ *  Внутренние вспомогательные функции
  * ================================================================ */
 
 static char s_dbg[128];
@@ -37,7 +37,7 @@ static void dbg_hex(tmc2209_t *drv, const char *prefix,
     drv->io.debug_print(buf, drv->io.ctx);
 }
 
-/* CRC8-ATM (polynomial 0x07, LSB-first) */
+/* CRC8-ATM (полином 0x07, младший бит первым) */
 static void tmc_crc(uint8_t *datagram, uint8_t len)
 {
     uint8_t *crc = datagram + (len - 1);
@@ -68,7 +68,7 @@ static uint8_t microsteps_to_mres(uint16_t ms)
         case 256: return 0;  case 128: return 1;  case 64: return 2;
         case 32:  return 3;  case 16:  return 4;  case 8:  return 5;
         case 4:   return 6;  case 2:   return 7;  case 1:  return 8;
-        default:  return 8;  /* fullstep fallback; callers must validate */
+        default:  return 8;  /* полный шаг по умолчанию; вызывающий должен проверять */
     }
 }
 
@@ -84,7 +84,7 @@ static uint8_t is_valid_microsteps(uint16_t ms)
 }
 
 /* ================================================================
- *  Low-level register I/O
+ *  Низкоуровневый обмен с регистрами
  * ================================================================ */
 
 tmc2209_result_t tmc2209_write_reg(tmc2209_t *drv, uint8_t reg, uint32_t value)
@@ -150,7 +150,7 @@ tmc2209_result_t tmc2209_read_reg_addr(tmc2209_t *drv, uint8_t addr,
     }
 
     uint8_t crc_fail = 0;
-    /* Standard 8-byte response: [Sync][MasterAddr=0xFF][Reg][Val32][CRC] */
+    /* Стандартный ответ 8 байт: [Sync][MasterAddr=0xFF][Reg][Val32][CRC] */
     for (uint8_t off = 0; off + 8 <= n; off++) {
         uint8_t *r = rx_buf + off;
         if (r[0] != TMC2209_SYNC_BYTE)   continue;
@@ -174,7 +174,7 @@ tmc2209_result_t tmc2209_read_reg_addr(tmc2209_t *drv, uint8_t addr,
         return TMC2209_OK;
     }
 
-    /* 7-byte: полный ответ 8 байт, но один байт (0xFF) потерян при приёме — восстанавливаем и проверяем CRC */
+    /* Вариант 7 байт: полный ответ 8 байт, один байт (0xFF) потерян при приёме — восстанавливаем и проверяем CRC */
     if (n >= 7) {
         for (uint8_t off = 0; off + 7 <= n; off++) {
             uint8_t *r = rx_buf + off;
@@ -227,7 +227,7 @@ tmc2209_result_t tmc2209_read_reg(tmc2209_t *drv, uint8_t reg, uint32_t *value)
 }
 
 /* ================================================================
- *  Shadow register helpers
+ *  Работа с теневыми регистрами
  * ================================================================ */
 
 static tmc2209_result_t shadow_write(tmc2209_t *drv, uint8_t reg,
@@ -239,7 +239,7 @@ static tmc2209_result_t shadow_write(tmc2209_t *drv, uint8_t reg,
     return r;
 }
 
-/* Modify specific bits in a shadow register and write. */
+/* Изменить отдельные биты в теневом регистре и записать. */
 static tmc2209_result_t shadow_modify(tmc2209_t *drv, uint8_t reg,
                                       uint32_t *shadow, uint32_t mask, uint32_t bits)
 {
@@ -247,14 +247,14 @@ static tmc2209_result_t shadow_modify(tmc2209_t *drv, uint8_t reg,
     return shadow_write(drv, reg, shadow, val);
 }
 
-/* Build IHOLD_IRUN from individual fields */
+/* Собрать IHOLD_IRUN из отдельных полей */
 static uint32_t build_ihold_irun(uint8_t ihold, uint8_t irun, uint8_t iholddelay)
 {
     return TMC2209_IHOLD(ihold) | TMC2209_IRUN(irun) | TMC2209_IHOLDDELAY(iholddelay);
 }
 
 /* ================================================================
- *  Init / Deinit
+ *  Инициализация и деинициализация
  * ================================================================ */
 
 tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
@@ -313,7 +313,7 @@ tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
                        TMC2209_SENDDELAY(cfg->senddelay));
     if (res != TMC2209_OK) return res;
 
-    /* Verify: IFCNT */
+    /* Проверка: IFCNT */
     uint32_t ifcnt = 0;
     res = tmc2209_read_reg(drv, TMC2209_REG_IFCNT, &ifcnt);
     if (res != TMC2209_OK) {
@@ -322,7 +322,7 @@ tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
     }
     DBG(drv, "init: IFCNT=%lu\r\n", (unsigned long)(ifcnt & 0xFF));
 
-    /* Verify: IOIN / VERSION */
+    /* Проверка: IOIN / VERSION */
     uint32_t ioin_raw = 0;
     res = tmc2209_read_reg(drv, TMC2209_REG_IOIN, &ioin_raw);
     if (res != TMC2209_OK) {
@@ -339,7 +339,7 @@ tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
         return TMC2209_ERR_HW;
     }
 
-    /* CHOPCONF: read-modify-write for MRES */
+    /* CHOPCONF: чтение-изменение-запись для MRES */
     uint32_t chop = 0;
     if (tmc2209_read_reg(drv, TMC2209_REG_CHOPCONF, &chop) != TMC2209_OK)
         chop = TMC2209_CHOPCONF_DEFAULT;
@@ -357,7 +357,7 @@ tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
     res = shadow_write(drv, TMC2209_REG_VACTUAL, &drv->shadow.vactual, 0);
     if (res != TMC2209_OK) return res;
 
-    /* Read FACTORY_CONF into shadow */
+    /* Прочитать FACTORY_CONF в тень */
     (void)tmc2209_read_reg(drv, TMC2209_REG_FACTORY_CONF, &drv->shadow.factory_conf);
 
     drv->initialized = 1;
@@ -434,7 +434,7 @@ tmc2209_result_t tmc2209_enable_internal_rsense(tmc2209_t *drv, uint8_t enable)
 }
 
 /* ================================================================
- *  Current / IHOLD_IRUN
+ *  Ток / IHOLD_IRUN
  * ================================================================ */
 
 tmc2209_result_t tmc2209_set_current(tmc2209_t *drv, uint16_t run_ma, uint16_t hold_ma)
@@ -504,7 +504,7 @@ tmc2209_result_t tmc2209_set_tpowerdown(tmc2209_t *drv, uint8_t value)
 }
 
 /* ================================================================
- *  CHOPCONF
+ *  CHOPCONF (чанпер)
  * ================================================================ */
 
 static uint32_t chopconf_encode(const tmc2209_chopconf_t *cc)
@@ -608,7 +608,7 @@ tmc2209_result_t tmc2209_enable_double_edge_step(tmc2209_t *drv, uint8_t enable)
 }
 
 /* ================================================================
- *  PWMCONF
+ *  PWMCONF (ШИМ)
  * ================================================================ */
 
 static uint32_t pwmconf_encode(const tmc2209_pwmconf_t *pc)
@@ -751,7 +751,7 @@ tmc2209_result_t tmc2209_configure_stallguard(tmc2209_t *drv,
 }
 
 /* ================================================================
- *  Motor control
+ *  Управление двигателем
  * ================================================================ */
 
 tmc2209_result_t tmc2209_enable(tmc2209_t *drv)
@@ -784,7 +784,7 @@ tmc2209_result_t tmc2209_stop(tmc2209_t *drv)
 }
 
 /* ================================================================
- *  Standby
+ *  Режим ожидания (standby)
  * ================================================================ */
 
 tmc2209_result_t tmc2209_enter_standby(tmc2209_t *drv)
@@ -827,7 +827,7 @@ tmc2209_result_t tmc2209_exit_standby(tmc2209_t *drv)
 }
 
 /* ================================================================
- *  Diagnostics
+ *  Диагностика
  * ================================================================ */
 
 tmc2209_result_t tmc2209_get_version(tmc2209_t *drv, uint8_t *version)
@@ -1003,7 +1003,7 @@ tmc2209_result_t tmc2209_get_mscuract(tmc2209_t *drv, tmc2209_mscuract_t *mc)
 }
 
 /* ================================================================
- *  OTP
+ *  OTP (однократно программируемая память)
  * ================================================================ */
 
 tmc2209_result_t tmc2209_otp_read(tmc2209_t *drv, tmc2209_otp_t *otp)
@@ -1026,23 +1026,23 @@ tmc2209_result_t tmc2209_otp_program_bit(tmc2209_t *drv,
     if (!drv->initialized) return TMC2209_ERR_NOT_INIT;
     if (byte_num > 2 || bit_num > 7) return TMC2209_ERR_INVALID_ARG;
 
-    /* Read current OTP state */
+    /* Прочитать текущее состояние OTP */
     tmc2209_otp_t before;
     tmc2209_result_t r = tmc2209_otp_read(drv, &before);
     if (r != TMC2209_OK) return r;
 
     const uint8_t *bytes = &before.byte0;
     if (bytes[byte_num] & (1U << bit_num))
-        return TMC2209_OK; /* bit already set */
+        return TMC2209_OK; /* бит уже установлен */
 
-    /* Program: write OTP_PROG with OTPMAGIC=1 */
+    /* Программирование: запись OTP_PROG с OTPMAGIC=1 */
     uint32_t prog = TMC2209_OTP_PROG(byte_num, bit_num);
     r = tmc2209_write_reg(drv, TMC2209_REG_OTP_PROG, prog);
     if (r != TMC2209_OK) return r;
 
     drv->io.delay_us(10000, drv->io.ctx);
 
-    /* Verify */
+    /* Проверка результата */
     tmc2209_otp_t after;
     r = tmc2209_otp_read(drv, &after);
     if (r != TMC2209_OK) return r;
@@ -1056,7 +1056,7 @@ tmc2209_result_t tmc2209_otp_program_bit(tmc2209_t *drv,
 }
 
 /* ================================================================
- *  FACTORY_CONF
+ *  FACTORY_CONF (заводские настройки)
  * ================================================================ */
 
 tmc2209_result_t tmc2209_get_factory_conf(tmc2209_t *drv, tmc2209_factory_conf_t *fc)
@@ -1082,7 +1082,7 @@ tmc2209_result_t tmc2209_set_fclktrim(tmc2209_t *drv, uint8_t trim)
 }
 
 /* ================================================================
- *  Multi-device
+ *  Несколько устройств на шине
  * ================================================================ */
 
 uint8_t tmc2209_scan_bus(tmc2209_t *drv, tmc2209_scan_entry_t results[4])
@@ -1110,7 +1110,7 @@ uint8_t tmc2209_scan_bus(tmc2209_t *drv, tmc2209_scan_entry_t results[4])
 }
 
 /* ================================================================
- *  Presets
+ *  Предустановки
  * ================================================================ */
 
 tmc2209_result_t tmc2209_apply_stealthchop_defaults(tmc2209_t *drv)
@@ -1135,7 +1135,7 @@ tmc2209_result_t tmc2209_apply_stealthchop_defaults(tmc2209_t *drv)
     r = tmc2209_set_pwmconf_config(drv, &pc);
     if (r != TMC2209_OK) return r;
 
-    /* Ensure chopper is enabled (toff > 0) */
+    /* Убедиться, что чанпер включён (toff > 0) */
     return shadow_modify(drv, TMC2209_REG_CHOPCONF, &drv->shadow.chopconf,
                          TMC2209_CHOPCONF_TOFF_Msk,
                          3U << TMC2209_CHOPCONF_TOFF_Pos);
@@ -1160,7 +1160,7 @@ tmc2209_result_t tmc2209_apply_spreadcycle_defaults(tmc2209_t *drv)
 }
 
 /* ================================================================
- *  Utility
+ *  Служебные функции
  * ================================================================ */
 
 tmc2209_result_t tmc2209_last_error(const tmc2209_t *drv)

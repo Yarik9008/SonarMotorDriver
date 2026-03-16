@@ -20,7 +20,7 @@
  */
 int UART_Init(void);
 
-/* HAL MSP helpers for command UART (USART1 only). */
+/* Вспомогательные функции HAL MSP для командного UART (только USART1). */
 void UART_CommandMspInit(UART_HandleTypeDef *h);
 void UART_CommandMspDeInit(UART_HandleTypeDef *h);
 

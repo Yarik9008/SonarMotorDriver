@@ -1,6 +1,6 @@
 #include "tmc2209/tmc2209_port_stm32_hal.h"
 
-/* ---- DWT cycle counter ---- */
+/* ---- Счётчик циклов DWT ---- */
 
 void tmc2209_port_stm32_dwt_init(void)
 {
@@ -17,7 +17,7 @@ static void port_delay_us(uint32_t us, void *ctx)
     while ((DWT->CYCCNT - t0) < cycles) { }
 }
 
-/* ---- UART ---- */
+/* ---- UART (передача и приём) ---- */
 
 static int port_uart_tx(const uint8_t *data, uint16_t len,
                         uint32_t timeout_ms, void *ctx)
@@ -71,7 +71,7 @@ static void port_uart_rx_flush(void *ctx)
         (void)h->Instance->DR;
 }
 
-/* ---- GPIO ---- */
+/* ---- GPIO (управление выводом EN) ---- */
 
 static void port_set_enable(uint8_t level, void *ctx)
 {
@@ -80,7 +80,7 @@ static void port_set_enable(uint8_t level, void *ctx)
                       level ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
-/* ---- Debug ---- */
+/* ---- Отладочный вывод ---- */
 
 static void port_debug_print(const char *str, void *ctx)
 {
@@ -89,7 +89,7 @@ static void port_debug_print(const char *str, void *ctx)
         hal->debug_fn(str);
 }
 
-/* ---- Fill I/O struct ---- */
+/* ---- Заполнение структуры ввода-вывода ---- */
 
 void tmc2209_port_stm32_hal_fill_io(tmc2209_io_t *io, tmc2209_hal_ctx_t *hal)
 {

@@ -1,7 +1,4 @@
-/**
- * @file tmc2209_port_stm32_hal.h
- * @brief STM32 HAL platform adapter for TMC2209 library.
- */
+/* tmc2209_port_stm32_hal.h — адаптер под STM32 HAL для библиотеки TMC2209. */
 
 #ifndef TMC2209_PORT_STM32_HAL_H
 #define TMC2209_PORT_STM32_HAL_H
@@ -22,10 +19,10 @@ typedef struct {
     void (*debug_fn)(const char *str);
 } tmc2209_hal_ctx_t;
 
-/* Fill tmc2209_io_t with STM32 HAL callback implementations. */
+/* Заполняет tmc2209_io_t реализациями колбэков на STM32 HAL. */
 void tmc2209_port_stm32_hal_fill_io(tmc2209_io_t *io, tmc2209_hal_ctx_t *hal);
 
-/* Initialize DWT cycle counter. */
+/* Инициализация счётчика циклов DWT. */
 void tmc2209_port_stm32_dwt_init(void);
 
 #ifdef __cplusplus

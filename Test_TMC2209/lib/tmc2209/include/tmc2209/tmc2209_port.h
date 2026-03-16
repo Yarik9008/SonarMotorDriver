@@ -1,7 +1,7 @@
-/* tmc2209_port.h — Platform abstraction layer for TMC2209 library.
+/* tmc2209_port.h — слой абстракции платформы для библиотеки TMC2209.
  *
- * Implement these callbacks for your platform and pass them
- * via tmc2209_io_t to tmc2209_init(). */
+ * Реализуйте эти колбэки для своей платформы и передайте их
+ * в tmc2209_init() через tmc2209_io_t. */
 
 #ifndef TMC2209_PORT_H
 #define TMC2209_PORT_H
@@ -10,46 +10,45 @@
 
 typedef struct {
     /*
-     * Transmit data over UART.
-     * Returns: 0 on success, non-zero on error.
+     * Передача данных по UART.
+     * Возврат: 0 при успехе, ненулевой код при ошибке.
      */
     int (*uart_tx)(const uint8_t *data, uint16_t len,
                    uint32_t timeout_ms, void *ctx);
 
     /*
-     * Receive data from UART.
-     * Writes number of bytes actually received to *received.
-     * Returns: 0 = all bytes received, 1 = timeout (partial), <0 = error.
+     * Приём данных по UART.
+     * В *received записывается фактически принятое число байт.
+     * Возврат: 0 = все байты приняты, 1 = таймаут (частичный приём), <0 = ошибка.
      */
     int (*uart_rx)(uint8_t *data, uint16_t max_len,
                    uint32_t timeout_ms, uint16_t *received, void *ctx);
 
     /*
-     * Flush UART RX buffer: discard pending bytes, clear error flags.
+     * Сброс приёмного буфера UART: отбросить ожидающие байты, сбросить флаги ошибок.
      */
     void (*uart_rx_flush)(void *ctx);
 
     /*
-     * Microsecond delay (blocking).
+     * Задержка в микросекундах (блокирующая).
      */
     void (*delay_us)(uint32_t us, void *ctx);
 
     /*
-     * Control the ENN (enable-not) pin.
-     * level=0 → driver enabled (ENN low), level=1 → disabled (ENN high).
+     * Управление выводом ENN (enable-not).
+     * level=0 — драйвер включён (ENN низкий), level=1 — выключен (ENN высокий).
      */
     void (*set_enable)(uint8_t level, void *ctx);
 
     /*
-     * Optional debug/trace output (may be NULL).
-     * Called with short diagnostic strings during init and register I/O.
+     * Опциональный отладочный вывод (может быть NULL).
+     * Вызывается с короткими диагностическими строками при инициализации и обмене с регистрами.
      */
     void (*debug_print)(const char *str, void *ctx);
 
     /*
-     * Opaque context pointer passed to every callback.
-     * Typically points to a platform-specific struct holding UART handle,
-     * GPIO references, etc.
+     * Непрозрачный контекст, передаётся в каждый колбэк.
+     * Обычно указывает на платформо-зависимую структуру с хэндлом UART, выводами GPIO и т.д.
      */
     void *ctx;
 

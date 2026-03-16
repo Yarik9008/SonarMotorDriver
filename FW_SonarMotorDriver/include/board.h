@@ -26,7 +26,7 @@
 /* -------- GPIO — светодиод (Blue Pill: PC13, active LOW) -------- */
 #define LED_PORT                GPIOC
 #define LED_PIN                 GPIO_PIN_13
-#define LED_TOGGLE_INTERVAL     (POLL_FREQ_HZ / 2U)  /* Heartbeat ~1 Гц */
+#define LED_TOGGLE_INTERVAL     (POLL_FREQ_HZ / 2U)  /* Индикатор активности ~1 Гц */
 
 /* -------- SYNC — SYNC_OUT / SYNC_IN -------- */
 #define SYNC_OUT_PORT           GPIOB

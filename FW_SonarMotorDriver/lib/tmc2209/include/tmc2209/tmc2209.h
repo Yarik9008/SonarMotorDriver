@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-/* ==== Driver context ==== */
+/* ==== Контекст драйвера ==== */
 
 typedef struct {
     tmc2209_config_t cfg;
@@ -35,14 +35,14 @@ typedef struct {
     } standby;
 } tmc2209_t;
 
-/* ==== Init / deinit ==== */
+/* ==== Инициализация и деинициализация ==== */
 
 /** Blocking init: configures all registers from cfg, verifies communication. */
 tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
                               const tmc2209_io_t *io);
 void             tmc2209_deinit(tmc2209_t *drv);
 
-/* ==== Low-level register access ==== */
+/* ==== Низкоуровневый доступ к регистрам ==== */
 
 tmc2209_result_t tmc2209_read_reg(tmc2209_t *drv, uint8_t reg, uint32_t *value);
 tmc2209_result_t tmc2209_write_reg(tmc2209_t *drv, uint8_t reg, uint32_t value);
@@ -65,7 +65,7 @@ tmc2209_result_t tmc2209_enable_stealthchop(tmc2209_t *drv);
  */
 tmc2209_result_t tmc2209_enable_internal_rsense(tmc2209_t *drv, uint8_t enable);
 
-/* ==== Current / IHOLD_IRUN ==== */
+/* ==== Ток: IHOLD_IRUN ==== */
 
 /** Set both run and hold current in mA (converts to CS using rsense). */
 tmc2209_result_t tmc2209_set_current(tmc2209_t *drv, uint16_t run_ma, uint16_t hold_ma);
@@ -128,14 +128,14 @@ tmc2209_result_t tmc2209_get_sgthrs(tmc2209_t *drv, uint8_t *threshold);
 tmc2209_result_t tmc2209_configure_stallguard(tmc2209_t *drv,
                                               const tmc2209_stallguard_config_t *sg);
 
-/* ==== Motor control ==== */
+/* ==== Управление двигателем ==== */
 
 tmc2209_result_t tmc2209_enable(tmc2209_t *drv);
 tmc2209_result_t tmc2209_disable(tmc2209_t *drv);
 tmc2209_result_t tmc2209_set_vactual(tmc2209_t *drv, int32_t velocity);
 tmc2209_result_t tmc2209_stop(tmc2209_t *drv);
 
-/* ==== Standby ==== */
+/* ==== Режим ожидания (standby) ==== */
 
 /**
  * Enter software standby: disables driver, zeroes hold current,
@@ -148,7 +148,7 @@ tmc2209_result_t tmc2209_enter_standby(tmc2209_t *drv);
  */
 tmc2209_result_t tmc2209_exit_standby(tmc2209_t *drv);
 
-/* ==== Diagnostics ==== */
+/* ==== Диагностика ==== */
 
 tmc2209_result_t tmc2209_get_version(tmc2209_t *drv, uint8_t *version);
 tmc2209_result_t tmc2209_get_ifcnt(tmc2209_t *drv, uint8_t *count);
@@ -188,7 +188,7 @@ tmc2209_result_t tmc2209_get_factory_conf(tmc2209_t *drv, tmc2209_factory_conf_t
 /** Set internal clock trim (0..31). Affects UART timing with internal oscillator. */
 tmc2209_result_t tmc2209_set_fclktrim(tmc2209_t *drv, uint8_t trim);
 
-/* ==== Multi-device ==== */
+/* ==== Несколько устройств на шине ==== */
 
 /**
  * Scan UART bus for TMC2209 devices on addresses 0..3.
@@ -197,14 +197,14 @@ tmc2209_result_t tmc2209_set_fclktrim(tmc2209_t *drv, uint8_t trim);
  */
 uint8_t tmc2209_scan_bus(tmc2209_t *drv, tmc2209_scan_entry_t results[4]);
 
-/* ==== Presets ==== */
+/* ==== Предустановки ==== */
 
 /** Apply StealthChop defaults (GCONF + PWMCONF + CHOPCONF.toff). */
 tmc2209_result_t tmc2209_apply_stealthchop_defaults(tmc2209_t *drv);
 /** Apply SpreadCycle defaults (GCONF + CHOPCONF). */
 tmc2209_result_t tmc2209_apply_spreadcycle_defaults(tmc2209_t *drv);
 
-/* ==== Utility ==== */
+/* ==== Служебные функции ==== */
 
 tmc2209_result_t tmc2209_last_error(const tmc2209_t *drv);
 const char      *tmc2209_result_str(tmc2209_result_t res);

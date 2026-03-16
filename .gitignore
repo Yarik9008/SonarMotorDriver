@@ -16,3 +16,6 @@ Status Report.txt
 
 # PlatformIO / IDE (автогенерация)
 compile_commands.json
+
+# Файл рабочей области VS Code (локальный)
+SonarMotorDriver.code-workspace

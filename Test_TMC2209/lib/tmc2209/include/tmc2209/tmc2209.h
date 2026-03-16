@@ -1,11 +1,10 @@
-/* tmc2209.h — TMC2209 stepper motor driver library: public API.
+/* tmc2209.h — публичный API библиотеки драйвера шагового двигателя TMC2209.
  *
- * Platform-agnostic UART driver for Trinamic TMC2209.
- * Provides register-level and high-level typed access to all
- * major TMC2209 features: StealthChop, SpreadCycle, CoolStep,
- * StallGuard, OTP, diagnostics, multi-device UART.
+ * Кроссплатформенный UART-драйвер для Trinamic TMC2209.
+ * Доступ к регистрам и типизированный высокоуровневый API для StealthChop,
+ * SpreadCycle, CoolStep, StallGuard, OTP, диагностики и мультиустройств по UART.
  *
- * Not thread-safe. Debug output buffer is shared across instances.
+ * Не потокобезопасен. Буфер отладочного вывода общий для всех экземпляров.
  */
 
 #ifndef TMC2209_H
@@ -19,7 +18,7 @@
 extern "C" {
 #endif
 
-/* ==== Driver context ==== */
+/* ==== Контекст драйвера ==== */
 
 typedef struct {
     tmc2209_config_t cfg;
@@ -34,14 +33,14 @@ typedef struct {
     } standby;
 } tmc2209_t;
 
-/* ==== Init / deinit ==== */
+/* ==== Инициализация и деинициализация ==== */
 
-/** Blocking init: configures all registers from cfg, verifies communication. */
+/** Блокирующая инициализация: настройка регистров из cfg и проверка связи. */
 tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
                               const tmc2209_io_t *io);
 void             tmc2209_deinit(tmc2209_t *drv);
 
-/* ==== Low-level register access ==== */
+/* ==== Низкоуровневый доступ к регистрам ==== */
 
 tmc2209_result_t tmc2209_read_reg(tmc2209_t *drv, uint8_t reg, uint32_t *value);
 tmc2209_result_t tmc2209_write_reg(tmc2209_t *drv, uint8_t reg, uint32_t value);
@@ -50,115 +49,114 @@ tmc2209_result_t tmc2209_read_reg_addr(tmc2209_t *drv, uint8_t addr,
 
 /* ==== GCONF ==== */
 
-/** Read GCONF from chip and decode. */
+/** Чтение и декодирование GCONF из микросхемы. */
 tmc2209_result_t tmc2209_get_gconf(tmc2209_t *drv, tmc2209_gconf_t *gc);
-/** Invert motor shaft direction. */
+/** Инвертировать направление вала двигателя. */
 tmc2209_result_t tmc2209_set_shaft(tmc2209_t *drv, uint8_t inverted);
-/** Switch to SpreadCycle mode. */
+/** Переключить в режим SpreadCycle. */
 tmc2209_result_t tmc2209_enable_spreadcycle(tmc2209_t *drv);
-/** Switch to StealthChop mode. */
+/** Переключить в режим StealthChop. */
 tmc2209_result_t tmc2209_enable_stealthchop(tmc2209_t *drv);
 /**
- * Enable internal sense resistors.
- * WARNING: changes current scaling; apply before enabling motor.
+ * Включить внутренние резисторы измерения тока.
+ * ВНИМАНИЕ: меняет масштаб тока; применять до включения двигателя.
  */
 tmc2209_result_t tmc2209_enable_internal_rsense(tmc2209_t *drv, uint8_t enable);
 
-/* ==== Current / IHOLD_IRUN ==== */
+/* ==== Ток: IHOLD_IRUN ==== */
 
-/** Set both run and hold current in mA (converts to CS using rsense). */
+/** Установить ток движения и удержания в мА (пересчёт в CS по rsense). */
 tmc2209_result_t tmc2209_set_current(tmc2209_t *drv, uint16_t run_ma, uint16_t hold_ma);
-/** Set run current only (hold current preserved). */
+/** Установить только ток движения (ток удержания не меняется). */
 tmc2209_result_t tmc2209_set_run_current(tmc2209_t *drv, uint16_t run_ma);
-/** Set hold current only (run current preserved). */
+/** Установить только ток удержания (ток движения не меняется). */
 tmc2209_result_t tmc2209_set_hold_current(tmc2209_t *drv, uint16_t hold_ma);
-/** Get current CS values from shadow register. */
+/** Получить текущие значения CS из теневого регистра. */
 tmc2209_result_t tmc2209_get_current_config(tmc2209_t *drv, tmc2209_current_config_t *cc);
-/** Set IHOLDDELAY (0..15). */
+/** Установить IHOLDDELAY (0..15). */
 tmc2209_result_t tmc2209_set_iholddelay(tmc2209_t *drv, uint8_t delay);
-/** Set TPOWERDOWN register (0..255). */
+/** Записать регистр TPOWERDOWN (0..255). */
 tmc2209_result_t tmc2209_set_tpowerdown(tmc2209_t *drv, uint8_t value);
 
 /* ==== CHOPCONF ==== */
 
-/** Set CHOPCONF from typed struct. Updates shadow. */
+/** Записать CHOPCONF из типизированной структуры. Обновляет тень. */
 tmc2209_result_t tmc2209_set_chopconf_config(tmc2209_t *drv, const tmc2209_chopconf_t *cc);
-/** Read CHOPCONF from chip and decode. */
+/** Прочитать CHOPCONF из микросхемы и декодировать. */
 tmc2209_result_t tmc2209_get_chopconf_config(tmc2209_t *drv, tmc2209_chopconf_t *cc);
-/** Set CHOPCONF from raw 32-bit value. */
+/** Записать CHOPCONF сырым 32-битным значением. */
 tmc2209_result_t tmc2209_set_chopconf(tmc2209_t *drv, uint32_t value);
-/** Set microstep resolution (1,2,4,8,16,32,64,128,256). */
+/** Установить разрешение микрошагов (1,2,4,8,16,32,64,128,256). */
 tmc2209_result_t tmc2209_set_microsteps(tmc2209_t *drv, uint16_t ms);
-/** Read current microstep resolution from chip. */
+/** Прочитать текущее разрешение микрошагов из микросхемы. */
 tmc2209_result_t tmc2209_get_microsteps(tmc2209_t *drv, uint16_t *ms);
-/** Enable/disable 256-microstep interpolation. */
+/** Включить/выключить интерполяцию до 256 микрошагов. */
 tmc2209_result_t tmc2209_enable_interpolation(tmc2209_t *drv, uint8_t enable);
-/** Enable/disable double-edge STEP (both rising and falling). */
+/** Включить/выключить двойной фронт STEP (и по нарастанию, и по спаду). */
 tmc2209_result_t tmc2209_enable_double_edge_step(tmc2209_t *drv, uint8_t enable);
 
 /* ==== PWMCONF ==== */
 
-/** Set PWMCONF from typed struct (write-only register, uses shadow). */
+/** Записать PWMCONF из типизированной структуры (регистр только на запись, используется тень). */
 tmc2209_result_t tmc2209_set_pwmconf_config(tmc2209_t *drv, const tmc2209_pwmconf_t *pc);
-/** Get current PWMCONF from shadow (register is write-only). */
+/** Получить текущий PWMCONF из тени (регистр только на запись). */
 tmc2209_result_t tmc2209_get_pwmconf_config(tmc2209_t *drv, tmc2209_pwmconf_t *pc);
-/** Set PWMCONF from raw 32-bit value. */
+/** Записать PWMCONF сырым 32-битным значением. */
 tmc2209_result_t tmc2209_set_pwmconf(tmc2209_t *drv, uint32_t value);
-/** Set freewheel / standstill mode. */
+/** Установить режим холостого хода / стояния. */
 tmc2209_result_t tmc2209_set_freewheel(tmc2209_t *drv, tmc2209_freewheel_t mode);
 
 /* ==== CoolStep ==== */
 
-/** Configure CoolStep from typed struct. Writes COOLCONF shadow. */
+/** Настроить CoolStep из типизированной структуры. Записывает тень COOLCONF. */
 tmc2209_result_t tmc2209_set_coolstep_config(tmc2209_t *drv,
                                              const tmc2209_coolstep_config_t *cs);
-/** Get CoolStep config from shadow (COOLCONF is write-only). */
+/** Получить конфиг CoolStep из тени (COOLCONF только на запись). */
 tmc2209_result_t tmc2209_get_coolstep_config(tmc2209_t *drv, tmc2209_coolstep_config_t *cs);
-/** Set TCOOLTHRS velocity threshold for CoolStep/StallGuard. */
+/** Установить порог скорости TCOOLTHRS для CoolStep/StallGuard. */
 tmc2209_result_t tmc2209_set_tcoolthrs(tmc2209_t *drv, uint32_t threshold);
 
 /* ==== StallGuard ==== */
 
-/** Set StallGuard threshold (0..255). */
+/** Установить порог StallGuard (0..255). */
 tmc2209_result_t tmc2209_set_sgthrs(tmc2209_t *drv, uint8_t threshold);
-/** Get StallGuard threshold from shadow (SGTHRS is write-only). */
+/** Получить порог StallGuard из тени (SGTHRS только на запись). */
 tmc2209_result_t tmc2209_get_sgthrs(tmc2209_t *drv, uint8_t *threshold);
-/** Convenience: configure StallGuard thresholds and TCOOLTHRS together. */
+/** Удобная настройка: пороги StallGuard и TCOOLTHRS вместе. */
 tmc2209_result_t tmc2209_configure_stallguard(tmc2209_t *drv,
                                               const tmc2209_stallguard_config_t *sg);
 
-/* ==== Motor control ==== */
+/* ==== Управление двигателем ==== */
 
 tmc2209_result_t tmc2209_enable(tmc2209_t *drv);
 tmc2209_result_t tmc2209_disable(tmc2209_t *drv);
 tmc2209_result_t tmc2209_set_vactual(tmc2209_t *drv, int32_t velocity);
 tmc2209_result_t tmc2209_stop(tmc2209_t *drv);
 
-/* ==== Standby ==== */
+/* ==== Режим ожидания (standby) ==== */
 
 /**
- * Enter software standby: disables driver, zeroes hold current,
- * sets freewheel mode. Previous settings are saved for restore.
+ * Войти в программный standby: выключить драйвер, обнулить ток удержания,
+ * включить режим холостого хода. Предыдущие настройки сохраняются для восстановления.
  */
 tmc2209_result_t tmc2209_enter_standby(tmc2209_t *drv);
 /**
- * Exit standby: restores previous current/power-down settings
- * and re-enables the driver.
+ * Выйти из standby: восстановить ток/задержку отключения и снова включить драйвер.
  */
 tmc2209_result_t tmc2209_exit_standby(tmc2209_t *drv);
 
-/* ==== Diagnostics ==== */
+/* ==== Диагностика ==== */
 
 tmc2209_result_t tmc2209_get_version(tmc2209_t *drv, uint8_t *version);
 tmc2209_result_t tmc2209_get_ifcnt(tmc2209_t *drv, uint8_t *count);
 tmc2209_result_t tmc2209_get_ioin(tmc2209_t *drv, tmc2209_ioin_t *ioin);
 tmc2209_result_t tmc2209_get_drv_status(tmc2209_t *drv, tmc2209_drv_status_t *st);
 tmc2209_result_t tmc2209_get_gstat(tmc2209_t *drv, tmc2209_gstat_t *gs);
-/** Clear GSTAT flags by writing 1 to each bit. */
+/** Сбросить флаги GSTAT записью 1 в каждый бит. */
 tmc2209_result_t tmc2209_clear_gstat(tmc2209_t *drv);
 tmc2209_result_t tmc2209_get_sg_result(tmc2209_t *drv, uint16_t *result);
 tmc2209_result_t tmc2209_get_tstep(tmc2209_t *drv, uint32_t *tstep);
-/** Read CS_ACTUAL from DRV_STATUS (0..31). */
+/** Прочитать CS_ACTUAL из DRV_STATUS (0..31). */
 tmc2209_result_t tmc2209_get_cs_actual(tmc2209_t *drv, uint8_t *cs);
 tmc2209_result_t tmc2209_get_pwm_scale(tmc2209_t *drv, tmc2209_pwm_scale_t *ps);
 tmc2209_result_t tmc2209_get_pwm_auto(tmc2209_t *drv, tmc2209_pwm_auto_t *pa);
@@ -167,16 +165,16 @@ tmc2209_result_t tmc2209_get_mscuract(tmc2209_t *drv, tmc2209_mscuract_t *mc);
 
 /* ==== OTP ====
  *
- * WARNING: OTP bits can only be programmed from 0 to 1.
- * This operation is IRREVERSIBLE and limited to a few write cycles.
- * Read OTP first, only program if you fully understand the implications.
+ * ВНИМАНИЕ: биты OTP программируются только из 0 в 1.
+ * Операция НЕОБРАТИМА и ограничена малым числом циклов записи.
+ * Сначала прочитайте OTP; программируйте только при полном понимании последствий.
  */
 
-/** Read all 3 OTP bytes. */
+/** Прочитать все 3 байта OTP. */
 tmc2209_result_t tmc2209_otp_read(tmc2209_t *drv, tmc2209_otp_t *otp);
 /**
- * Program a single OTP bit. byte_num=0..2, bit_num=0..7.
- * Reads before/after to verify. Returns ERR_HW if verification fails.
+ * Запрограммировать один бит OTP. byte_num=0..2, bit_num=0..7.
+ * Чтение до/после для проверки. Возвращает ERR_HW при ошибке верификации.
  */
 tmc2209_result_t tmc2209_otp_program_bit(tmc2209_t *drv,
                                          uint8_t byte_num, uint8_t bit_num);
@@ -184,26 +182,26 @@ tmc2209_result_t tmc2209_otp_program_bit(tmc2209_t *drv,
 /* ==== FACTORY_CONF ==== */
 
 tmc2209_result_t tmc2209_get_factory_conf(tmc2209_t *drv, tmc2209_factory_conf_t *fc);
-/** Set internal clock trim (0..31). Affects UART timing with internal oscillator. */
+/** Установить подстройку внутренней частоты (0..31). Влияет на тайминг UART при внутреннем осцилляторе. */
 tmc2209_result_t tmc2209_set_fclktrim(tmc2209_t *drv, uint8_t trim);
 
-/* ==== Multi-device ==== */
+/* ==== Несколько устройств на шине ==== */
 
 /**
- * Scan UART bus for TMC2209 devices on addresses 0..3.
- * results must point to an array of 4 tmc2209_scan_entry_t.
- * Returns number of devices found.
+ * Сканировать шину UART на наличие TMC2209 по адресам 0..3.
+ * results — массив из 4 элементов tmc2209_scan_entry_t.
+ * Возвращает количество найденных устройств.
  */
 uint8_t tmc2209_scan_bus(tmc2209_t *drv, tmc2209_scan_entry_t results[4]);
 
-/* ==== Presets ==== */
+/* ==== Предустановки ==== */
 
-/** Apply StealthChop defaults (GCONF + PWMCONF + CHOPCONF.toff). */
+/** Применить настройки по умолчанию для StealthChop (GCONF + PWMCONF + CHOPCONF.toff). */
 tmc2209_result_t tmc2209_apply_stealthchop_defaults(tmc2209_t *drv);
-/** Apply SpreadCycle defaults (GCONF + CHOPCONF). */
+/** Применить настройки по умолчанию для SpreadCycle (GCONF + CHOPCONF). */
 tmc2209_result_t tmc2209_apply_spreadcycle_defaults(tmc2209_t *drv);
 
-/* ==== Utility ==== */
+/* ==== Служебные функции ==== */
 
 tmc2209_result_t tmc2209_last_error(const tmc2209_t *drv);
 const char      *tmc2209_result_str(tmc2209_result_t res);

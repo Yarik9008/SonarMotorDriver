@@ -1,16 +1,16 @@
-/* tmc2209_port_stm32_hal.c — STM32 HAL implementations for TMC2209 port. */
+/* tmc2209_port_stm32_hal.c — реализации порта TMC2209 на STM32 HAL. */
 
 #include "tmc2209/tmc2209_port_stm32_hal.h"
 #include "board.h"
 #include <stdint.h>
 
-/* ---- Microdelay (DWT) ---- */
+/* ---- Микрозадержка (DWT) ---- */
 
 static void port_delay_us(uint32_t us, void *ctx)
 {
     tmc2209_hal_ctx_t *hal = (tmc2209_hal_ctx_t *)ctx;
     uint32_t cycles = us * (hal->sysclk_hz / 1000000U);
-    /* DWT must be initialized elsewhere (e.g. board_init) */
+    /* DWT должен быть инициализирован ранее (например, в board_init) */
     uint32_t t0 = DWT->CYCCNT;
     while ((DWT->CYCCNT - t0) < cycles) { }
 }
@@ -56,7 +56,7 @@ static void port_uart_rx_flush(void *ctx)
     while (__HAL_UART_GET_FLAG(h, UART_FLAG_RXNE)) (void)h->Instance->DR;
 }
 
-/* ---- GPIO & Timer ---- */
+/* ---- GPIO и таймер ---- */
 
 static void port_set_enable(uint8_t level, void *ctx)
 {
@@ -68,7 +68,7 @@ static int port_motor_hw_init(void *ctx)
 {
     tmc2209_hal_ctx_t *hal = (tmc2209_hal_ctx_t *)ctx;
 
-    /* GPIO Pins */
+    /* Выводы GPIO */
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin   = hal->step_pin;
     gpio.Mode  = GPIO_MODE_AF_PP;
@@ -87,17 +87,17 @@ static int port_motor_hw_init(void *ctx)
     gpio.Speed = GPIO_SPEED_FREQ_LOW;
     gpio.Pull  = GPIO_NOPULL;
     HAL_GPIO_Init(hal->en_port, &gpio);
-    HAL_GPIO_WritePin(hal->en_port, hal->en_pin, GPIO_PIN_SET); /* Start disabled */
+    HAL_GPIO_WritePin(hal->en_port, hal->en_pin, GPIO_PIN_SET); /* Старт с выключенным драйвером */
 
-    /* Timer initialization is partially expected to be done via hal->htim_step init 
-       but we ensure PWM config here if needed, or just rely on it being ready. */
+    /* Инициализация таймера частично выполняется при настройке hal->htim_step;
+       здесь при необходимости дополняем конфигурацию ШИМ или полагаемся на готовность. */
     if (HAL_TIM_PWM_Init(hal->htim_step) != HAL_OK) return -1;
 
     TIM_OC_InitTypeDef sConfigOC = {0};
     sConfigOC.OCMode       = TIM_OCMODE_PWM1;
     sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
     sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
-    sConfigOC.Pulse        = (hal->htim_step->Init.Period + 1) / 2; /* Default 50% if period set */
+    sConfigOC.Pulse        = (hal->htim_step->Init.Period + 1) / 2; /* По умолчанию 50% при заданном периоде */
     
     if (HAL_TIM_PWM_ConfigChannel(hal->htim_step, &sConfigOC, hal->tim_channel) != HAL_OK) return -1;
 
@@ -116,7 +116,7 @@ static void port_motor_set_rate(uint16_t arr, uint16_t ccr, void *ctx)
     __HAL_TIM_SET_AUTORELOAD(hal->htim_step, arr - 1U);
     __HAL_TIM_SET_COMPARE(hal->htim_step, hal->tim_channel, ccr);
     
-    /* If timer not running, start it */
+    /* Если таймер ещё не запущен — запускаем */
     if (!(hal->htim_step->Instance->CR1 & TIM_CR1_CEN)) {
         __HAL_TIM_SET_COUNTER(hal->htim_step, 0);
         HAL_TIM_PWM_Start(hal->htim_step, hal->tim_channel);

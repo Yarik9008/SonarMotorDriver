@@ -1,7 +1,7 @@
-/* tmc2209_regs.h — TMC2209 register addresses and bitfield definitions.
+/* tmc2209_regs.h — адреса регистров и поля бит TMC2209.
  *
- * Complete coverage of all TMC2209 registers per datasheet rev 1.09.
- * Access types: R = read-only, W = write-only, R/W, R/C = read/clear-on-write.
+ * Полное соответствие даташиту TMC2209 rev 1.09.
+ * Типы доступа: R — только чтение, W — только запись, R/W, R/C — чтение/сброс по записи.
  */
 
 #ifndef TMC2209_REGS_H
@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-/* ==== Register addresses ==== */
+/* ==== Адреса регистров ==== */
 
 #define TMC2209_REG_GCONF        0x00U  /* R/W */
 #define TMC2209_REG_GSTAT        0x01U  /* R/C */
@@ -40,7 +40,7 @@
 #define TMC2209_REG_PWM_SCALE    0x71U  /* R   */
 #define TMC2209_REG_PWM_AUTO     0x72U  /* R   */
 
-/* ==== Protocol constants ==== */
+/* ==== Константы протокола ==== */
 
 #define TMC2209_SYNC_BYTE          0x05U
 #define TMC2209_MASTER_ADDR        0xFFU

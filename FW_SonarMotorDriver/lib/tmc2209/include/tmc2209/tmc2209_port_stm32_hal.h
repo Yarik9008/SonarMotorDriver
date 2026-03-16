@@ -18,8 +18,8 @@
 extern "C" {
 #endif
 
-/* STM32 HAL Context for TMC2209. 
- * Includes UART for chip communication and TIM/GPIO for motor backend. 
+/* Контекст STM32 HAL для TMC2209.
+ * Включает UART для обмена с чипом и TIM/GPIO для бэкенда мотора (STEP/DIR).
  */
 typedef struct {
     /* UART */
@@ -27,11 +27,11 @@ typedef struct {
     uint8_t             half_duplex;
     uint32_t            sysclk_hz;
 
-    /* Enable Pin */
+    /* Вывод разрешения (EN) */
     GPIO_TypeDef       *en_port;
     uint16_t            en_pin;
 
-    /* Motor Backend (STEP/DIR) */
+    /* Бэкенд мотора (STEP/DIR) */
     TIM_HandleTypeDef  *htim_step;
     uint32_t            tim_channel;
     GPIO_TypeDef       *step_port;
@@ -39,14 +39,14 @@ typedef struct {
     GPIO_TypeDef       *dir_port;
     uint16_t            dir_pin;
 
-    /* Misc */
+    /* Прочее */
     void (*debug_fn)(const char *str);
 } tmc2209_hal_ctx_t;
 
-/** Fill i/o callbacks with STM32 HAL implementations. */
+/** Заполнить колбэки ввода-вывода реализациями на STM32 HAL. */
 void tmc2209_port_stm32_hal_fill_io(tmc2209_io_t *io, tmc2209_hal_ctx_t *hal);
 
-/* HAL MSP helpers for the TMC2209 UART backend (USART2). */
+/* Вспомогательные функции HAL MSP для UART TMC2209 (USART2). */
 void tmc2209_port_stm32_hal_uart_msp_init(UART_HandleTypeDef *h);
 void tmc2209_port_stm32_hal_uart_msp_deinit(UART_HandleTypeDef *h);
 

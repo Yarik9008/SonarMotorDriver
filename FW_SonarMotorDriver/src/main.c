@@ -640,7 +640,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         float s = cmd->scan_start, e = cmd->scan_end, step = cmd->scan_step;
         uint16_t d = cmd->scan_delay_ms;
         int8_t inf = cmd->scan_infinite_dir;
-        /* Zigzag: start < end, step > 0, delay > 0. Infinite: step > 0, delay > 0 */
+        /* Зигзаг: start < end, step > 0, delay > 0. Бесконечное: step > 0, delay > 0 */
         if (step <= 0 || d == 0) {
             SendResponse("err:scan\r\n");
             break;
