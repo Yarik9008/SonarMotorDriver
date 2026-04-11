@@ -2,7 +2,7 @@
 # SonarMotorDriver — общий .gitignore для репозитория
 # =============================================================================
 
-# -------- Altium Designer (PCB_SonarMotorDriver) --------
+# -------- Altium Designer (Hardware/PCB_SonarMotorDriver) --------
 History/
 __Backup/
 *.PcbDoc.htm
@@ -16,7 +16,7 @@ Status Report.txt
 *.Canvas
 *.DXPPrj
 
-# -------- PlatformIO (FW_SonarMotorDriver, Test_TMC2209) --------
+# -------- PlatformIO (Software/FW_SonarMotorDriver, Software/Test_TMC2209) --------
 .pio/
 .cache/
 compile_commands.json
