@@ -135,6 +135,15 @@ typedef enum {
 static InitState s_init = INIT_UART;
 static uint32_t  s_init_t0;
 
+/* Ограничение попыток инициализации UART: при неисправном порте автомат
+ * иначе навсегда завис бы в INIT_UART (без watchdog и индикации плата
+ * выглядит мёртвой). После лимита деградируем — работаем без UART. */
+#define UART_INIT_MAX_TRIES 3U
+static uint8_t s_uart_tries = 0;
+static uint8_t g_uart_fault = 0;   /* 1 = UART не поднялся: быстрое мигание LED */
+static uint8_t g_enabled;          /* предварительное объявление: определение с
+                                      инициализатором ниже (Init_Poll выше него) */
+
 /**
  * @brief Диагностика энкодера: серия чтений BiSS-C (см. board.h ENCODER_DIAG_*).
  *
@@ -242,8 +251,15 @@ static uint8_t Init_Poll(void)
     switch (s_init) {
 
     case INIT_UART:
-        if (UART_Init() == 0)
+        if (UART_Init() == 0) {
             s_init = INIT_BISS_INIT;
+        } else if (++s_uart_tries >= UART_INIT_MAX_TRIES) {
+            /* Работаем без UART: слежение за позицией и IWDG живут,
+             * мотор не включаем. Индикация — быстрое мигание LED. */
+            g_uart_fault = 1;
+            g_enabled = 0;
+            s_init = INIT_BISS_INIT;
+        }
         break;
 
     case INIT_BISS_INIT: {
@@ -1026,7 +1042,9 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 static void Heartbeat_Tick(void)
 {
     static uint32_t cnt = 0;
-    if (++cnt >= LED_TOGGLE_INTERVAL) {
+    /* При отказе UART период мигания в 5 раз меньше — отличимый код неисправности. */
+    uint32_t period = g_uart_fault ? (LED_TOGGLE_INTERVAL / 5U) : LED_TOGGLE_INTERVAL;
+    if (++cnt >= period) {
         cnt = 0;
         HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
     }
