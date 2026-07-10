@@ -290,7 +290,24 @@ BiSS_Status BiSS_GetResult(BiSS_Reading *out)
 
 void BiSS_Abort(void)
 {
-    HAL_SPI_Abort(&hspi_biss);
+    /* Вызывается из ISR TIM2 (выше SysTick): блокирующие HAL-вызовы с
+     * таймаутами здесь запрещены — HAL_SPI_Abort() ждёт снятия BSY/TXE по
+     * HAL_GetTick(), а тот на этом приоритете заморожен → таймаут не истечёт
+     * и прерывание зависнет навсегда. Аборт регистрами, без wait-циклов;
+     * BSY SPI может держаться ещё несколько мкс — следующий старт будет
+     * через ≥1 мс, это не мешает. */
+    CLEAR_BIT(hspi_biss.Instance->CR2, SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN);
+
+    __HAL_DMA_DISABLE(&hdma_spi_tx);
+    __HAL_DMA_DISABLE(&hdma_spi_rx);
+    DMA1->IFCR = DMA_IFCR_CGIF2 | DMA_IFCR_CGIF3;   /* SPI1_RX=Ch2, SPI1_TX=Ch3 */
+
+    hdma_spi_tx.State = HAL_DMA_STATE_READY;  __HAL_UNLOCK(&hdma_spi_tx);
+    hdma_spi_rx.State = HAL_DMA_STATE_READY;  __HAL_UNLOCK(&hdma_spi_rx);
+
+    __HAL_SPI_CLEAR_OVRFLAG(&hspi_biss);      /* чтение DR, затем SR */
+    hspi_biss.State = HAL_SPI_STATE_READY;    __HAL_UNLOCK(&hspi_biss);
+
     g_dma_error = 1;
     g_dma_done  = 1;
 }
