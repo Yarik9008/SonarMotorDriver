@@ -75,15 +75,23 @@ int  tmc2209_motor_is_moving(void);
 /* ---- Команды движения ---- */
 
 /**
- * Задать скорость движения («шаги» за один тик контура управления).
- * Используется контуром управления для непрерывного движения.
- * В режиме STEP/DIR: задаёт частоту импульсов.
- * В режиме UART: задаёт VACTUAL.
+ * Непрерывная скорость STEP/DIR: steps_per_s импульсов в секунду.
+ * 0 = остановка. ШИМ TIM4 работает без перезапуска каждый тик контура.
+ * В режиме UART: эквивалент VACTUAL (steps_per_s * 256).
+ */
+void tmc2209_motor_set_step_rate(uint32_t steps_per_s, int8_t dir_cw);
+
+/**
+ * Одноразовая серия из |steps| импульсов (доводка в deadband).
+ * Для непрерывного движения используйте tmc2209_motor_set_step_rate().
  */
 void tmc2209_motor_move_steps(int32_t steps);
 
 /** Движение с заданной скоростью (только режим UART). */
 void tmc2209_motor_move_velocity(int32_t velocity);
+
+/** Обработчик TIM4 для одноразовых серий (STEP/DIR, из HAL_TIM_PeriodElapsedCallback). */
+void tmc2209_motor_tim4_period_elapsed(void);
 
 /* ---- Конфигурация ---- */
 

@@ -24,7 +24,7 @@ Platform-agnostic C library for Trinamic TMC2209 stepper motor driver (UART inte
 - `tmc2209_port_stm32_hal.c` — STM32 HAL callbacks implementation
 - STEP/DIR pulse generation (timers, DMA) — not part of library
 
-**Example application**: `src/main.c` — USB CDC CLI demonstrating library usage.
+**Example application**: `src/main.c` — UART CLI demonstrating library usage.
 
 ## 2. Quick Start
 

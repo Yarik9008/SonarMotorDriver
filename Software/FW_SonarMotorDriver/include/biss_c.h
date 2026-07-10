@@ -58,13 +58,16 @@ BiSS_Status BiSS_Init(const BiSS_Config *cfg);
 /* Блокирующее чтение (для инициализации). */
 BiSS_Status BiSS_Read(BiSS_Reading *out);
 
-/* Запуск неблокирующего чтения через DMA. */
-void BiSS_StartRead(void);
+/* Запуск неблокирующего чтения через DMA. 0 = запущено, 1 = ошибка SPI/DMA. */
+uint8_t BiSS_StartRead(void);
 
-/* Готов ли результат DMA-чтения? */
+/* Готов ли результат DMA-чтения (включая завершение с ошибкой)? */
 uint8_t BiSS_IsReady(void);
 
 /* Получить результат последнего чтения. Вызывать после BiSS_IsReady()==1. */
 BiSS_Status BiSS_GetResult(BiSS_Reading *out);
+
+/* Аварийное прерывание зависшего DMA-обмена (вызывать при таймауте). */
+void BiSS_Abort(void);
 
 #endif /* BISS_C_H */

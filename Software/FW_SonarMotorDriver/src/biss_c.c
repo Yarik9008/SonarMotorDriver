@@ -28,7 +28,8 @@ static uint16_t      g_re_pin;
 
 static uint8_t g_tx_buf[BISS_FRAME_BYTES];
 static uint8_t g_rx_buf[BISS_FRAME_BYTES];
-static volatile uint8_t g_dma_done = 0;
+static volatile uint8_t g_dma_done  = 0;
+static volatile uint8_t g_dma_error = 0;
 
 /* --- CRC --- */
 
@@ -115,12 +116,22 @@ static BiSS_Status biss_parse_frame(const uint8_t *rx, BiSS_Reading *out)
     return BISS_OK;
 }
 
-/* --- DMA колбэк --- */
+/* --- DMA колбэки --- */
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     if (hspi->Instance == SPI1)
         g_dma_done = 1;
+}
+
+/* Ошибка SPI/DMA: без этого колбэка g_dma_done никогда не выставился бы и
+ * опрос энкодера остановился бы навсегда (dma_pend завис в 1). */
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1) {
+        g_dma_error = 1;
+        g_dma_done  = 1;
+    }
 }
 
 /* --- DMA IRQ --- */
@@ -220,9 +231,9 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi)
         HAL_DMA_Init(&hdma_spi_tx);
         __HAL_LINKDMA(hspi, hdmatx, hdma_spi_tx);
 
-        HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 4, 0);
+        HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, IRQ_PRIO_DMA, 0);
         HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
-        HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 4, 0);
+        HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, IRQ_PRIO_DMA, 0);
         HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
     }
 }
@@ -248,11 +259,18 @@ BiSS_Status BiSS_Read(BiSS_Reading *out)
 
 /* --- Неблокирующее чтение (DMA) --- */
 
-void BiSS_StartRead(void)
+uint8_t BiSS_StartRead(void)
 {
-    g_dma_done = 0;
+    g_dma_done  = 0;
+    g_dma_error = 0;
     memset(g_rx_buf, 0x00, sizeof(g_rx_buf));
-    HAL_SPI_TransmitReceive_DMA(&hspi_biss, g_tx_buf, g_rx_buf, BISS_FRAME_BYTES);
+    if (HAL_SPI_TransmitReceive_DMA(&hspi_biss, g_tx_buf, g_rx_buf,
+                                    BISS_FRAME_BYTES) != HAL_OK) {
+        g_dma_error = 1;
+        g_dma_done  = 1;
+        return 1;
+    }
+    return 0;
 }
 
 uint8_t BiSS_IsReady(void)
@@ -262,6 +280,18 @@ uint8_t BiSS_IsReady(void)
 
 BiSS_Status BiSS_GetResult(BiSS_Reading *out)
 {
+    if (g_dma_error) {
+        memcpy(out->spi_dump, g_rx_buf, BISS_FRAME_BYTES);
+        out->status = BISS_ERR_SPI;
+        return BISS_ERR_SPI;
+    }
     return biss_parse_frame(g_rx_buf, out);
+}
+
+void BiSS_Abort(void)
+{
+    HAL_SPI_Abort(&hspi_biss);
+    g_dma_error = 1;
+    g_dma_done  = 1;
 }
 

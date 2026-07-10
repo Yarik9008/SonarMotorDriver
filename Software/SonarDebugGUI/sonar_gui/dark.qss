@@ -1,0 +1,266 @@
+/* Тёмная тема SonarDebugGUI — «Sonar Ops Console».
+   Палитра синхронизирована с sonar_gui/theme.py (COLORS). */
+
+/* ---------- База ---------- */
+
+QWidget {
+    background-color: #0a0d13;              /* bg */
+    color: #e8ecf4;                          /* text */
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow, QScrollArea, QScrollArea > QWidget > QWidget {
+    background-color: #0a0d13;
+}
+
+QToolTip {
+    background-color: #161c27;               /* surface2 */
+    color: #e8ecf4;
+    border: 1px solid #33405a;               /* border2 */
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+
+/* ---------- Шапка приложения ---------- */
+
+#headerBar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #141a26, stop:1 #0e1219);
+    border-bottom: 1px solid #1f2735;        /* border */
+}
+
+/* ---------- Группы-панели ---------- */
+
+QGroupBox {
+    background-color: #10141c;               /* surface */
+    border: 1px solid #1f2735;               /* border */
+    border-radius: 10px;
+    margin-top: 14px;
+    padding: 8px 10px 8px 10px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 6px;
+    color: #37d6ff;                          /* accent */
+    background: transparent;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+/* ---------- Подписи ---------- */
+
+QLabel { background: transparent; }
+QLabel[dim="true"] { color: #93a0b4; }       /* text_dim */
+
+/* Чипы-статусы (после смены свойства chip вызывать style().unpolish/polish!) */
+QLabel[chip="ok"] {
+    background: rgba(61, 220, 132, 0.10);
+    color: #3ddc84;                          /* green */
+    border: 1px solid rgba(61, 220, 132, 0.35);
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-weight: 600;
+}
+QLabel[chip="warn"] {
+    background: rgba(255, 180, 84, 0.10);
+    color: #ffb454;                          /* amber */
+    border: 1px solid rgba(255, 180, 84, 0.35);
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-weight: 600;
+}
+QLabel[chip="err"] {
+    background: rgba(255, 93, 93, 0.10);
+    color: #ff5d5d;                          /* danger */
+    border: 1px solid rgba(255, 93, 93, 0.35);
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-weight: 600;
+}
+QLabel[chip="off"] {
+    background: rgba(147, 160, 180, 0.08);
+    color: #93a0b4;                          /* text_dim */
+    border: 1px solid #2b3446;
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-weight: 600;
+}
+
+/* ---------- Кнопки ---------- */
+
+/* Единый вторичный стиль кнопок для ОБЕИХ колонок: плоская заливка + рамка.
+   Акцентные варианты — только через objectName (primaryButton/stopButton). */
+QPushButton {
+    background: #1d2531;
+    border: 1px solid #2f3a4c;
+    border-radius: 7px;
+    padding: 5px 12px;
+    color: #e8ecf4;
+}
+QPushButton:hover {
+    background: #242e3c;
+    border-color: #33405a;                   /* border2 */
+}
+QPushButton:pressed {
+    background: #141a24;
+    border-color: #2b3446;
+}
+QPushButton:disabled {
+    color: #5c6880;                          /* text_faint */
+    background: #12161f;
+    border-color: #1f2735;
+}
+QPushButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #0d7396, stop:1 #0a5d7a);
+    border-color: #37d6ff;
+    color: #eafcff;
+}
+
+QPushButton#primaryButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #0d7396, stop:1 #0a5d7a);
+    border: 1px solid #37d6ff;               /* accent */
+    color: #eafcff;
+    font-weight: 700;
+}
+QPushButton#primaryButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #1085ac, stop:1 #0c6b8c);
+}
+QPushButton#primaryButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #0a5d7a, stop:1 #084c64);
+}
+QPushButton#primaryButton:disabled {
+    background: #12161f;
+    border-color: #1f2735;
+    color: #5c6880;
+}
+
+QPushButton#stopButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #a12626, stop:1 #7c1a1a);
+    border: 1px solid #ff5d5d;               /* danger */
+    color: #ffecec;
+    font-weight: 800;
+    min-height: 28px;                        /* ~42px итоговой высоты */
+    font-size: 14px;
+}
+QPushButton#stopButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #b52e2e, stop:1 #8d1f1f);
+}
+QPushButton#stopButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #7c1a1a, stop:1 #611212);
+}
+QPushButton#stopButton:disabled {
+    background: #12161f;
+    border-color: #1f2735;
+    color: #5c6880;
+}
+
+/* ---------- Поля ввода ---------- */
+
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {
+    background-color: #0b0f16;               /* well */
+    border: 1px solid #1f2735;               /* border */
+    border-radius: 7px;
+    padding: 4px 8px;
+    color: #e8ecf4;
+    selection-background-color: #0a5d7a;     /* accent_dim */
+    selection-color: #eafcff;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+QPlainTextEdit:focus, QTextEdit:focus {
+    border-color: #37d6ff;                   /* accent */
+}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled,
+QDoubleSpinBox:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
+    color: #5c6880;
+    border-color: #1a2230;
+}
+
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView {
+    background-color: #10141c;               /* surface */
+    border: 1px solid #33405a;               /* border2 */
+    selection-background-color: #0a5d7a;
+    selection-color: #eafcff;
+    color: #e8ecf4;
+    outline: none;
+}
+
+/* Кнопки спин-боксов отключены программно (NoButtons в MainWindow):
+   значения вводятся с клавиатуры и применяются кнопкой «✓». */
+
+/* ---------- Чекбоксы / радиокнопки ---------- */
+
+QCheckBox { spacing: 6px; background: transparent; }
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid #2b3446;
+    border-radius: 4px;
+    background-color: #0b0f16;               /* well */
+}
+QCheckBox::indicator:hover { border-color: #33405a; }
+QCheckBox::indicator:checked {
+    background-color: #37d6ff;               /* accent */
+    border-color: #37d6ff;
+}
+
+QRadioButton { spacing: 6px; background: transparent; }
+QRadioButton::indicator {
+    width: 15px; height: 15px;
+    border: 1px solid #2b3446;
+    border-radius: 8px;
+    background-color: #0b0f16;               /* well */
+}
+QRadioButton::indicator:hover { border-color: #33405a; }
+QRadioButton::indicator:checked {
+    background-color: #37d6ff;               /* accent */
+    border: 4px solid #0b0f16;
+}
+
+/* ---------- Разделители / скроллбары / статусбар ---------- */
+
+QSplitter::handle { background-color: #0a0d13; }          /* bg */
+QSplitter::handle:horizontal { width: 3px; }
+QSplitter::handle:vertical   { height: 3px; }
+QSplitter::handle:hover { background-color: #33405a; }    /* border2 */
+
+QScrollBar:vertical {
+    background: #0b0f16;
+    width: 10px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #2b3446;
+    border-radius: 5px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover { background: #33405a; }
+QScrollBar:horizontal {
+    background: #0b0f16;
+    height: 10px;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: #2b3446;
+    border-radius: 5px;
+    min-width: 24px;
+}
+QScrollBar::handle:horizontal:hover { background: #33405a; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+
+QStatusBar {
+    background-color: #0b0f16;               /* well */
+    color: #93a0b4;                          /* text_dim */
+    border-top: 1px solid #1f2735;           /* border */
+}
+QStatusBar::item { border: none; }

@@ -1,22 +1,26 @@
 # SonarMotorDriver
 
-Проект драйвера шагового двигателя с замкнутым контуром управления (PID) по абсолютному энкодеру LENZ IRS (BiSS C). В репозитории — прошивка для **STM32F103C8**, проект печатной платы (Altium), 3D-сборка, даташиты и иллюстрации.
+Проект драйвера шагового двигателя с замкнутым контуром управления (PID) по абсолютному энкодеру LENZ IRS (BiSS C). В репозитории — прошивка для **STM32F103C8**, 3D-сборка платы, даташиты и иллюстрации.
 
-> **Примечание:** Подключение TMC2209 (UART, DIAG) на целевой плате **не протестировано** на аппаратуре.
+> **Примечание:** Управление TMC2209 по UART (ток, микрошаг, вращение) проверено на аппаратуре целевой платы — мотор вращается, энкодер отвечает, драйвер подтверждает конфигурацию (`mcfg`). Пин **DIAG** (StallGuard/Open Load) разведён, но программно не опрашивается.
 
 ## Иллюстрации
 
-| CAD: сборка с радиатором | Плата: верхний слой (релиз 0.1) |
+| CAD: сборка с радиатором | CAD: сборка с прозрачным кожухом |
 | --- | --- |
-| ![CAD сборка с радиатором](Image/SonarMotorDriver_CAD_heatsink_isometric.png) | ![Верхний слой платы SonarMotorDriver](Image/SonarMotorDriver_PCB_top.jpg) |
+| ![CAD сборка с радиатором](Image/SonarMotorDriver_CAD_heatsink_isometric.png) | ![CAD сборка с прозрачным кожухом](Image/SonarMotorDriver_CAD_transparent_cover_isometric.png) |
+
+| Плата: верхний слой (релиз 0.1) | Плата: нижний слой (релиз 0.1) |
+| --- | --- |
+| ![Верхний слой платы SonarMotorDriver](Image/SonarMotorDriver_PCB_top.jpg) | ![Нижний слой платы SonarMotorDriver](Image/SonarMotorDriver_PCB_bottom.jpg) |
 
 ## Структура репозитория
 
 | Каталог | Описание |
 |---------|----------|
 | [**Software/FW_SonarMotorDriver/**](Software/FW_SonarMotorDriver/) | Основная прошивка STM32F103C8: PID, энкодер BiSS C, TMC2209, **UART** (команды и телеметрия), IWDG |
-| [**Software/Test_TMC2209/**](Software/Test_TMC2209/) | Отладочная прошивка **STM32F446** + TMC2209: **USB CDC** (виртуальный COM), проверка драйвера отдельно от основной платы |
-| [**Hardware/PCB_SonarMotorDriver/**](Hardware/PCB_SonarMotorDriver/) | Проект Altium Designer — схема и разводка платы |
+| [**Software/FW_SonarMotorDriver_Sim/**](Software/FW_SonarMotorDriver_Sim/) | Имитатор основной прошивки: тот же UART-протокол (команды и телеметрия), но без реального энкодера и TMC2209 — для отладки ПО верхнего уровня без подключённого мотора |
+| [**Software/Test_TMC2209/**](Software/Test_TMC2209/) | Отладочная прошивка **STM32F103C8** + TMC2209: **UART CLI** через внешний USB-UART переходник, проверка драйвера отдельно от основной платы |
 | [**Hardware/CAD/**](Hardware/CAD/) | 3D-модели (SolidWorks/STEP): сборка с радиатором и кожухом, радиатор, STEP компонентов BOM |
 | [**Docs/Datasheet/**](Docs/Datasheet/) | PDF-даташиты ключевых компонентов (STM32, TMC2209, THVD1452, питание, разъёмы и т.д.) |
 | [**Image/**](Image/) | Рендеры платы и CAD для документации |
@@ -39,10 +43,10 @@ pio run                    # сборка
 pio run --target upload    # прошивка (см. platformio.ini: ST-Link / WCH-Link + OpenOCD)
 ```
 
-Тестовая прошивка с USB CDC: [Software/Test_TMC2209/README.md](Software/Test_TMC2209/README.md).
+Имитатор UART-протокола (без мотора и энкодера): [Software/FW_SonarMotorDriver_Sim/README.md](Software/FW_SonarMotorDriver_Sim/README.md).
+Тестовая прошивка драйвера TMC2209: [Software/Test_TMC2209/README.md](Software/Test_TMC2209/README.md).
 
 ## Требования
 
 - **PlatformIO** — сборка прошивок в `Software/`
 - **Программатор** — ST-Link, CMSIS-DAP или иной, совместимый с настройками `upload` в `platformio.ini`
-- **Altium Designer** — правка схемы и платы в `Hardware/PCB_SonarMotorDriver/`
