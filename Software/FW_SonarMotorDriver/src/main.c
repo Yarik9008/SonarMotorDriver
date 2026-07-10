@@ -49,7 +49,7 @@ static void Scan_Tick(void);
 
 /* --- Константы --- */
 
-#define DEG_PER_STEP     (360.0f / (float)MOTOR_STEPS_PER_REV)
+#define DEG_PER_STEP_DEFAULT (360.0f / (float)MOTOR_STEPS_PER_REV)
 #define MAX_DEG_PER_TICK ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ)
 #define DT_S             (1.0f / (float)POLL_FREQ_HZ)
 #define COUNTS_TO_DEG(c) ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV)
@@ -70,8 +70,12 @@ static void Scan_Tick(void);
 #define STALL_FAST_TICKS       (STALL_FAST_MS / POLL_INTERVAL_MS)
 #define STALL_IDLE_RESET_TICKS (STALL_IDLE_RESET_MS / POLL_INTERVAL_MS)
 
+/* Реальный масштаб градус↔шаг: следует за командой mstep (микрошаг драйвера
+ * меняется в рантайме, а DEG_PER_STEP_DEFAULT — только compile-time значение). */
+static float g_deg_per_step = DEG_PER_STEP_DEFAULT;
+
 static inline int32_t DegToSteps(float deg)
-{ return (int32_t)(deg / DEG_PER_STEP); }
+{ return (int32_t)(deg / g_deg_per_step); }
 
 static inline float clampf(float v, float lo, float hi)
 { return (v < lo) ? lo : (v > hi) ? hi : v; }
@@ -440,7 +444,7 @@ static void ApplyVelocity(float v_deg_per_tick)
     }
     float av = v_deg_per_tick;
     if (av < 0.0f) av = -av;
-    uint32_t sps = (uint32_t)(av / DEG_PER_STEP * (float)POLL_FREQ_HZ + 0.5f);
+    uint32_t sps = (uint32_t)(av / g_deg_per_step * (float)POLL_FREQ_HZ + 0.5f);
     if (sps == 0U) {
         tmc2209_motor_stop();
         g_last_ctrl = 0.0f;
@@ -459,7 +463,7 @@ static void DoSteps(int32_t steps)
         return;
     }
     tmc2209_motor_move_steps(steps);
-    g_last_ctrl = (float)steps * DEG_PER_STEP;
+    g_last_ctrl = (float)steps * g_deg_per_step;
 }
 
 /* Сброс регулятора и профиля движения (смена цели/режима, остановки) */
@@ -814,7 +818,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                     if (g_scan_st == SCAN_MOVING)
                         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
                     DoSteps(snap);
-                    g_last_ctrl = (float)snap * DEG_PER_STEP;
+                    g_last_ctrl = (float)snap * g_deg_per_step;
                     final_move  = 1;
                 }
                 g_was_outside_db = 0;
@@ -1292,7 +1296,12 @@ static void ProcessCommand(const Cmd_Result *cmd)
             break;
         }
         int r = tmc2209_motor_set_microsteps(cmd->microsteps);
-        if      (r ==  0) SendResponse("ok:mstep=%u\r\n", (unsigned)cmd->microsteps);
+        if (r == 0) {
+            /* Драйвер принял новый микрошаг — пересчитываем реальный масштаб
+             * градус↔шаг (иначе snap/OL считались бы по compile-time значению). */
+            g_deg_per_step = 360.0f / ((float)MOTOR_FULL_STEPS_REV * (float)cmd->microsteps);
+            SendResponse("ok:mstep=%u\r\n", (unsigned)cmd->microsteps);
+        }
         else if (r == -1) SendResponse("err:not ready\r\n");
         else if (r == -2) SendResponse("err:bad arg (1/2/4/8/16/32/64/128/256)\r\n");
         else              SendResponse("err:apply failed\r\n");
