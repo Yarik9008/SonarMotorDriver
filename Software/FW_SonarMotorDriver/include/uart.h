@@ -14,14 +14,15 @@
 #include "stm32f1xx_hal.h"
 
 /**
- * @brief Инициализация USART1 и DMA.
- * @return 0 при успехе, -1 при ошибке.
+ * @brief Инициализация командных портов USART1 и USART3 (с DMA/IT).
+ * @return 0 при успехе, -1 при ошибке (провал основного порта USART1).
  *
- * Настраивает периферию и запускает DMA RX в режиме ожидания.
+ * Настраивает оба порта и запускает приём в режиме ожидания. TX дублируется
+ * на оба порта, RX объединяется в общий буфер.
  */
 int UART_Init(void);
 
-/* Вспомогательные функции HAL MSP для командного UART (только USART1). */
+/* Вспомогательные функции HAL MSP для командного UART (USART1 и USART3). */
 void UART_CommandMspInit(UART_HandleTypeDef *h);
 void UART_CommandMspDeInit(UART_HandleTypeDef *h);
 
@@ -38,7 +39,8 @@ uint8_t UART_Transmit(const uint8_t *buf, uint16_t len);
 /* Задача отправки TX. Вызывать из main loop. */
 void UART_Task(void);
 
-/* Ненулевое значение, если USART1 ещё передаёт или в очереди есть данные. */
+/* Ненулевое значение, если любой из портов (USART1/USART3) ещё передаёт
+ * или в его очереди есть данные. */
 uint8_t UART_TxPending(void);
 
 /* Извлечение одной строки из RX буфера. Возвращает длину строки или 0. */

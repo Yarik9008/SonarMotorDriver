@@ -352,7 +352,12 @@ tmc2209_result_t tmc2209_init(tmc2209_t *drv, const tmc2209_config_t *cfg,
     res = shadow_write(drv, TMC2209_REG_CHOPCONF, &drv->shadow.chopconf, chop);
     if (res != TMC2209_OK) return res;
 
-    /* PWMCONF */
+    /* PWMCONF. Значение по умолчанию 0xC10D0024 (reset default TMC2209) по полям:
+     *   pwm_ofs=36 [7:0], pwm_grad=0 [15:8], pwm_freq=1 [17:16],
+     *   pwm_autoscale=1 [18], pwm_autograd=1 [19], freewheel=0 [21:20],
+     *   pwm_reg=1 [27:24], pwm_lim=12 [31:28].
+     * TODO(review): в задании поле указано как pwm_reg=8, но биты [27:24] of
+     * 0xC10D0024 = 0x1 → pwm_reg=1; оставлена фактическая расшифровка. */
     uint32_t pwm = cfg->pwmconf ? cfg->pwmconf : 0xC10D0024U;
     res = shadow_write(drv, TMC2209_REG_PWMCONF, &drv->shadow.pwmconf, pwm);
     if (res != TMC2209_OK) return res;
