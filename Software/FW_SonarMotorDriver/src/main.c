@@ -393,8 +393,6 @@ static uint8_t  g_telem_debug    = TELEMETRY_DEBUG_DEFAULT;  ///< Флаг ра�
 static uint32_t g_enc_raw_prev   = 0xFFFFFFFF;  ///< Предыдущее "сырое" значение энкодера (для дельты)
 static int64_t  g_enc_counts     = 0;           ///< Накопленный счетчик импульсов (многооборотность)
 
-static float    g_cl_accum       = 0;           ///< Накопитель дробных шагов для Closed-Loop
-static float    g_ol_accum       = 0;           ///< Накопитель дробных шагов для Open-Loop
 static float    g_last_ctrl      = 0;           ///< Последнее вычисленное управляющее воздействие
 
 static CtrlMode g_mode           = MODE_CL;     ///< Текущий режим управления
@@ -501,8 +499,6 @@ static void DoSteps(int32_t steps)
 static void Control_Reset(void)
 {
     PID_Reset(&g_pid);
-    g_cl_accum = 0;
-    g_ol_accum = 0;
     g_vel_cmd  = 0;
 }
 
@@ -880,7 +876,8 @@ static void MotorControl_Tick(uint8_t enc_ok)
          * перехода в OL по ENCODER_FAIL_MS. Иначе мотор до 500 мс крутился бы
          * неуправляемо по устаревшей уставке скорости. */
         if (g_enc_fail_cnt >= ENCODER_COAST_TICKS) {
-            /* Только стоп мотора; g_cl_accum сохраняем для продолжения после enc_ok */
+            /* Только стоп мотора; движение продолжится после восстановления
+             * данных энкодера (цель и профиль сохраняются). */
             tmc2209_motor_stop();
         }
 
@@ -1129,7 +1126,6 @@ static void Scan_Tick(void)
     /* Профиль движения не сбрасываем: между точками скана рампа скорости
      * продолжается плавно, PID стартует с чистым интегралом */
     PID_Reset(&g_pid);
-    g_cl_accum = 0;
 }
 
 /* --- Команды --- */
@@ -1179,7 +1175,6 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_target_deg = cmd->target;
         g_homing     = 0;
         PID_Reset(&g_pid);
-        g_cl_accum = 0;
         /* g_vel_cmd не трогаем: смена цели на ходу продолжает рампу плавно */
         SendResponse("ok:t=%.2f\r\n", (double)g_target_deg);
         break;
@@ -1189,7 +1184,6 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_st  = SCAN_IDLE;
         g_homing   = 0;
         PID_Reset(&g_pid);
-        g_cl_accum = 0;
         if (!g_enabled) { g_enabled = 1; tmc2209_motor_set_enabled(1); }
         SendResponse("ok:t=%c\r\n", (g_cont_dir > 0) ? '+' : '-');
         break;
@@ -1245,7 +1239,6 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_inf       = inf;
         g_homing         = 0;
         PID_Reset(&g_pid);
-        g_cl_accum = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         if (inf)
             SendResponse("ok:scan=%.2f,%c,%.2f,%u\r\n",

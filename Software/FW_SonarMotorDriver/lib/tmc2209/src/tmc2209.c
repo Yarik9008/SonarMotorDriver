@@ -1035,8 +1035,10 @@ tmc2209_result_t tmc2209_otp_program_bit(tmc2209_t *drv,
     tmc2209_result_t r = tmc2209_otp_read(drv, &before);
     if (r != TMC2209_OK) return r;
 
-    const uint8_t *bytes = &before.byte0;
-    if (bytes[byte_num] & (1U << bit_num))
+    /* Индексируем через локальный массив: (&before.byte0)[byte_num] — UB
+     * (доступ за пределы объекта byte0). byte_num уже проверен (<=2). */
+    const uint8_t bbytes[3] = { before.byte0, before.byte1, before.byte2 };
+    if (bbytes[byte_num] & (1U << bit_num))
         return TMC2209_OK; /* bit already set */
 
     /* Program: write OTP_PROG with OTPMAGIC=1 */
@@ -1051,7 +1053,7 @@ tmc2209_result_t tmc2209_otp_program_bit(tmc2209_t *drv,
     r = tmc2209_otp_read(drv, &after);
     if (r != TMC2209_OK) return r;
 
-    const uint8_t *abytes = &after.byte0;
+    const uint8_t abytes[3] = { after.byte0, after.byte1, after.byte2 };
     if (!(abytes[byte_num] & (1U << bit_num))) {
         drv->last_error = TMC2209_ERR_HW;
         return TMC2209_ERR_HW;

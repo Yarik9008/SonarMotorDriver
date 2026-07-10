@@ -314,9 +314,8 @@ int UART_Init(void)
     uart_reset_runtime_state();
     s_uart_ready = 0;
 
-    s_ports[0].instance = UART_INSTANCE;
-    s_ports[1].instance = UART3_INSTANCE;
-
+    /* .instance каждого порта выставляется внутри uart_port_init() до
+     * HAL_UART_Init (нужен MSP-колбэку) — отдельное присваивание здесь лишнее. */
     if (uart_port_init(&s_ports[0], UART_INSTANCE, UART_BAUDRATE,
                        UART_TX_PORT, UART_TX_PIN, UART_RX_PORT, UART_RX_PIN, 1U) != 0) {
         uart_port_rollback(&s_ports[0]);
