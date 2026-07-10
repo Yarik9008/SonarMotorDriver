@@ -274,8 +274,10 @@ static int uart_port_init(UartPortCtx *p, USART_TypeDef *instance, uint32_t baud
     if (HAL_UART_Init(&p->huart) != HAL_OK || p->msp_error)
         return -1;
 
+    p->ready = 1;               /* ДО включения приёма: иначе RXNE-шторм в
+                                   USART3_IRQHandler при байте, принятом в окне
+                                   между HAL_UART_Init (UE+RE) и включением RXNEIE */
     uart_port_rx_start(p);
-    p->ready = 1;
     return 0;
 }
 
@@ -359,8 +361,15 @@ void USART1_IRQHandler(void)
 void USART3_IRQHandler(void)
 {
     UartPortCtx *p = &s_ports[1];
-    if (!p->ready)
+    if (!p->ready) {
+        /* Порт ещё не готов, но RXNE уже мог защёлкнуться — очищаем источник
+         * (последовательность F1: чтение SR, затем DR), иначе прерывание
+         * тут же повторится (tail-chaining) и заморозит main навсегда. */
+        volatile uint32_t tmp = p->huart.Instance->SR;
+        tmp = p->huart.Instance->DR;
+        (void)tmp;
         return;
+    }
     if (p->use_dma && __HAL_UART_GET_FLAG(&p->huart, UART_FLAG_IDLE)) {
         __HAL_UART_CLEAR_IDLEFLAG(&p->huart);
         uart_rx_drain(p);
