@@ -248,6 +248,36 @@ static void Rediag_Feed(BiSS_Status st, const BiSS_Reading *rd)
 }
 
 /**
+ * @brief Boot-баннер: причина последнего сброса и версия прошивки.
+ *
+ * Отправляется одной строкой `boot:rst=<флаги> fw=<версия>` после подъёма
+ * UART. Делает молчаливые перезагрузки (в т.ч. по IWDG) различимыми на хосте:
+ * частый rst=iwdg = зависание, пойманное сторожевым таймером.
+ */
+static void Boot_Banner(void)
+{
+    uint32_t csr = RCC->CSR;
+    char flags[48];
+    int n = 0;
+    flags[0] = '\0';
+    /* Порядок флагов зафиксирован (por,pin,sft,iwdg,wwdg,lpwr) */
+    #define RST_APPEND(bit, name) \
+        do { if (csr & (bit)) \
+            n += snprintf(flags + n, sizeof(flags) - (size_t)n, "%s" name, n ? "," : ""); \
+        } while (0)
+    RST_APPEND(RCC_CSR_PORRSTF,  "por");
+    RST_APPEND(RCC_CSR_PINRSTF,  "pin");
+    RST_APPEND(RCC_CSR_SFTRSTF,  "sft");
+    RST_APPEND(RCC_CSR_IWDGRSTF, "iwdg");
+    RST_APPEND(RCC_CSR_WWDGRSTF, "wwdg");
+    RST_APPEND(RCC_CSR_LPWRRSTF, "lpwr");
+    #undef RST_APPEND
+    if (flags[0] == '\0') { flags[0] = '-'; flags[1] = '\0'; }
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+    SendResponse("boot:rst=%s fw=%s\r\n", flags, FW_VERSION);
+}
+
+/**
  * @brief Опрос стейт-машины инициализации.
  * @return 1, если инициализация завершена, иначе 0.
  *
@@ -260,6 +290,7 @@ static uint8_t Init_Poll(void)
 
     case INIT_UART:
         if (UART_Init() == 0) {
+            Boot_Banner();                /* причина сброса + версия FW */
             s_init = INIT_BISS_INIT;
         } else if (++s_uart_tries >= UART_INIT_MAX_TRIES) {
             /* Работаем без UART: слежение за позицией и IWDG живут,

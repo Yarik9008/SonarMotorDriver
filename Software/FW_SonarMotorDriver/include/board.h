@@ -12,6 +12,13 @@
 
 #include "stm32f1xx_hal.h"
 
+/* -------- Версия прошивки (для boot-баннера) --------
+ * Задаётся через build_flags в platformio.ini (-DFW_VERSION="..."); фолбэк
+ * на случай сборки без флага. */
+#ifndef FW_VERSION
+#define FW_VERSION "dev"
+#endif
+
 /* -------- RCC — тактирование (HSI/2 × PLL12 = 48 МГц) -------- */
 #define SYSCLK_HZ               48000000U
 #define APB1_CLK_HZ             (SYSCLK_HZ / 2U)   /* 24 МГц (макс. 36 МГц) */
