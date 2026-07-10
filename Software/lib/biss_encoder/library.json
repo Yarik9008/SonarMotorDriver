@@ -1,0 +1,20 @@
+{
+  "name": "biss_encoder",
+  "version": "1.0.0",
+  "description": "BiSS-C driver for LENZ IRS absolute encoders (STM32Cube HAL and Arduino ports)",
+  "keywords": "biss, encoder, lenz, spi, rs485",
+  "license": "MIT",
+  "frameworks": ["arduino", "stm32cube"],
+  "platforms": ["ststm32"],
+  "headers": [
+    "biss_encoder/biss_encoder.h",
+    "biss_encoder/biss_protocol.h",
+    "biss_encoder/biss_models.h",
+    "biss_encoder/biss_port.h",
+    "biss_encoder/biss_port_stm32_hal.h",
+    "biss_encoder/biss_port_arduino.h"
+  ],
+  "build": {
+    "includeDir": "include"
+  }
+}

@@ -54,6 +54,13 @@ QGroupBox::title {
 
 QLabel { background: transparent; }
 QLabel[dim="true"] { color: #93a0b4; }       /* text_dim */
+QLabel[well="true"] {
+    color: #93a0b4;
+    background: #0b0f16;
+    border: 1px solid #1f2735;
+    border-radius: 6px;
+    padding: 4px;
+}
 
 /* Чипы-статусы (после смены свойства chip вызывать style().unpolish/polish!) */
 QLabel[chip="ok"] {

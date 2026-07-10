@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from collections import deque
+
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from . import protocol as P
@@ -24,12 +26,16 @@ class DeviceClient(QObject):
     validation_error = Signal(str)   # команда не прошла клиентскую проверку
     response_timeout = Signal(str)   # на команду не пришёл ответ
     scan_sector = Signal(object)     # (start, end) или None — для подсветки на диаграмме
+    param_confirmed = Signal(str, object)  # ключ DeviceState, значение из ok:
 
     def __init__(self, logger: Logger):
         super().__init__()
         self._logger = logger
         self._transport: Transport | None = None
-        self._pending: str | None = None
+        # FIFO ожидающих ответа команд: прошивка отвечает по одной строке
+        # ok:/err:/mode= на каждую команду в порядке отправки. Очередь (а не
+        # одно поле) корректно отслеживает пачку команд, отправленных подряд.
+        self._pending: deque[str] = deque()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(RESPONSE_TIMEOUT_MS)
@@ -48,16 +54,21 @@ class DeviceClient(QObject):
 
     def disconnect(self) -> None:
         self._cancel_timeout()
-        if self._transport is not None:
-            t, self._transport = self._transport, None
-            try:
-                t.line_received.disconnect(self._on_line)
-                t.opened.disconnect(self._on_opened)
-                t.closed.disconnect(self._on_closed)
-                t.error.disconnect(self._on_error)
-            except (RuntimeError, TypeError):
-                pass
-            t.close()
+        if self._transport is None:
+            return
+        t, self._transport = self._transport, None
+        try:
+            t.line_received.disconnect(self._on_line)
+            t.opened.disconnect(self._on_opened)
+            t.closed.disconnect(self._on_closed)
+            t.error.disconnect(self._on_error)
+        except (RuntimeError, TypeError):
+            pass
+        t.close()
+        # Явное отключение: сигнал closed уже отвязан от _on_closed (чтобы не
+        # ловить события закрываемого транспорта), поэтому UI об отключении
+        # уведомляем напрямую — иначе состояние «подключено» зависало бы.
+        self.connected.emit(False)
 
     @property
     def is_connected(self) -> bool:
@@ -80,8 +91,9 @@ class DeviceClient(QObject):
         self._transport.write_line(cmd)
         self._logger.log_tx(cmd)
         if P.expects_reply(cmd):
-            self._pending = cmd
-            self._timer.start()
+            self._pending.append(cmd)
+            if not self._timer.isActive():
+                self._timer.start()          # таймаут отсчитывается для головы очереди
         return True
 
     # ── Приём ──────────────────────────────────────────────────────────────
@@ -94,27 +106,41 @@ class DeviceClient(QObject):
                 self.telemetry.emit(data)
             return
         if kind == "mcfg":
-            self._cancel_timeout()
+            self._resolve_pending()
             data = P.parse_mcfg(line)
             if data:
                 self.mcfg.emit(data)
             self.reply.emit(line)
             return
         if kind == "reply":
-            self._cancel_timeout()
+            self._resolve_pending()
+            parsed = P.parse_ok_reply(line)
+            if parsed:
+                self.param_confirmed.emit(*parsed)
             self.reply.emit(line)
             return
-        # прочие строки (напр. err:motor_init при старте прошивки)
+        # прочие строки (напр. enc:ok при diag/старте, err:motor_init) — не ответ
+        # на команду в смысле FIFO, очередь не трогаем.
         self.reply.emit(line)
 
+    def _resolve_pending(self) -> None:
+        """Пришёл ответ на голову очереди: снимаем её и перевзводим таймаут."""
+        if self._pending:
+            self._pending.popleft()
+        self._timer.stop()
+        if self._pending:
+            self._timer.start()
+
     def _on_timeout(self) -> None:
-        if self._pending is not None:
-            cmd, self._pending = self._pending, None
+        if self._pending:
+            cmd = self._pending.popleft()
             self._logger.log_err(f"Нет ответа на: {cmd}")
             self.response_timeout.emit(cmd)
+        if self._pending:
+            self._timer.start()              # ждём ответ на следующую команду
 
     def _cancel_timeout(self) -> None:
-        self._pending = None
+        self._pending.clear()
         self._timer.stop()
 
     def _on_opened(self) -> None:

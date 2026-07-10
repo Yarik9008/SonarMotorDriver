@@ -174,4 +174,7 @@ class SerialTransport(Transport):
         return self._open
 
     def describe(self) -> str:
-        return f"COM {self._port} @ {BAUD}"
+        port = self._port
+        if port.upper().startswith("COM"):
+            return f"{port} @ {BAUD}"
+        return f"COM {port} @ {BAUD}"

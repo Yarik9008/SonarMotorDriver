@@ -1,15 +1,14 @@
 """ConnectionPanel — выбор канала (Симулятор / Реальный COM) и подключение."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QComboBox, QGroupBox, QHBoxLayout, QLabel,
-                               QPushButton, QRadioButton, QVBoxLayout)
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QGroupBox, QHBoxLayout,
+                               QLabel, QPushButton, QRadioButton, QVBoxLayout)
 
 from ..transport.serial_transport import find_stm32_port, list_serial_ports
 
 
 def _set_chip(label: QLabel, state: str, text: str | None = None) -> None:
-    """Ставит чип-состояние (ok/warn/err/off) и заново применяет стиль."""
     if text is not None:
         label.setText(text)
     label.setProperty("chip", state)
@@ -18,8 +17,15 @@ def _set_chip(label: QLabel, state: str, text: str | None = None) -> None:
     st.polish(label)
 
 
+_PORT_LABEL_MAX = 34  # символов в закрытом комбобоксе; полный текст — в тултипе
+
+
+def _elide(text: str, max_len: int = _PORT_LABEL_MAX) -> str:
+    return text if len(text) <= max_len else text[:max_len - 1].rstrip() + "…"
+
+
 class ConnectionPanel(QGroupBox):
-    connect_requested = Signal(str, str)   # mode ('sim'|'serial'), port
+    connect_requested = Signal(str, str)
     disconnect_requested = Signal()
 
     def __init__(self, parent=None):
@@ -29,25 +35,28 @@ class ConnectionPanel(QGroupBox):
         root = QVBoxLayout(self)
         root.setSpacing(6)
 
-        # Режим канала: симулятор или реальный последовательный порт
         row_mode = QHBoxLayout()
         self._rb_sim = QRadioButton("Симулятор")
-        self._rb_serial = QRadioButton("Реальный COM")
+        self._rb_serial = QRadioButton("Реальный COM-порт")
         self._rb_sim.setChecked(True)
+        self._mode_grp = QButtonGroup(self)
+        self._mode_grp.addButton(self._rb_sim)
+        self._mode_grp.addButton(self._rb_serial)
         self._rb_sim.toggled.connect(self._on_mode)
         row_mode.addWidget(self._rb_sim)
         row_mode.addWidget(self._rb_serial)
         row_mode.addStretch(1)
         root.addLayout(row_mode)
 
-        # Выбор порта: комбо не должно распирать панель по ширине
         row_port = QHBoxLayout()
         lbl_port = QLabel("Порт")
         lbl_port.setProperty("dim", "true")
         self._port = QComboBox()
         self._port.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self._port.setMinimumContentsLength(14)
+        self._port.setMinimumContentsLength(12)
+        self._port.setMinimumWidth(120)
+        self._port.currentIndexChanged.connect(self._update_port_tooltip)
         self._btn_refresh = QPushButton("⟳")
         self._btn_refresh.setFixedWidth(34)
         self._btn_refresh.setToolTip("Обновить список портов")
@@ -62,31 +71,39 @@ class ConnectionPanel(QGroupBox):
         self._btn.clicked.connect(self._on_button)
         root.addWidget(self._btn)
 
-        # Статус подключения — чип (off / ok / err)
         row_status = QHBoxLayout()
         self._status = QLabel()
+        self._status.setMinimumWidth(160)
+        self._status.setTextFormat(Qt.TextFormat.PlainText)
         _set_chip(self._status, "off", "Не подключено")
-        row_status.addWidget(self._status)
-        row_status.addStretch(1)
+        row_status.addWidget(self._status, 1)
         root.addLayout(row_status)
 
         self.refresh_ports()
         self._on_mode()
 
     def refresh_ports(self) -> None:
-        cur = self._port.currentText()
+        cur = self._port.currentData()
         self._port.clear()
         for dev, desc in list_serial_ports():
-            self._port.addItem(f"{dev} — {desc}", dev)
+            full = f"{dev} — {desc}"
+            self._port.addItem(_elide(full), dev)
+            idx = self._port.count() - 1
+            self._port.setItemData(idx, full, Qt.ItemDataRole.ToolTipRole)
         auto = find_stm32_port()
         if auto:
             idx = self._port.findData(auto)
             if idx >= 0:
                 self._port.setCurrentIndex(idx)
         elif cur:
-            i = self._port.findText(cur)
-            if i >= 0:
-                self._port.setCurrentIndex(i)
+            idx = self._port.findData(cur)
+            if idx >= 0:
+                self._port.setCurrentIndex(idx)
+        self._update_port_tooltip()
+
+    def _update_port_tooltip(self) -> None:
+        tip = self._port.itemData(self._port.currentIndex(), Qt.ItemDataRole.ToolTipRole)
+        self._port.setToolTip(tip or "")
 
     def _on_mode(self) -> None:
         serial = self._rb_serial.isChecked()
@@ -116,19 +133,21 @@ class ConnectionPanel(QGroupBox):
         self._rb_serial.setEnabled(not on)
         self._on_mode()
 
-    def set_chip(self, state: str, text: str) -> None:
-        """Прямое управление чипом статуса: state in ('ok','warn','err','off')."""
-        _set_chip(self._status, state, text)
-
     def set_status(self, text: str) -> None:
-        """Совместимый API: состояние чипа выводится из текста."""
         low = text.lower()
         if "ошибк" in low or "выберите" in low:
             state = "err"
         elif "не подключ" in low or low.startswith("нет "):
             state = "off"
-        elif "подключ" in low:
+        elif "подключ" in low or "симулятор" in low:
             state = "ok"
         else:
             state = "off"
-        _set_chip(self._status, state, text)
+        self._status.setText(text)
+        self._status.setToolTip(text)
+        _set_chip(self._status, state)
+
+    def set_enabled_controls(self, on: bool) -> None:
+        if not self._connected:
+            return
+        self._btn.setEnabled(on)

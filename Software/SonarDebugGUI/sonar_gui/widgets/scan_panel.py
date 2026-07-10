@@ -97,3 +97,12 @@ class ScanPanel(QGroupBox):
     def _stop_scan(self) -> None:
         self._send(P.cmd_stop())
         self.sector_changed.emit(None)
+
+    def set_enabled_controls(self, on: bool) -> None:
+        self._mode.setEnabled(on)
+        self._start.setEnabled(on)
+        self._end.setEnabled(on)
+        self._step.setEnabled(on)
+        self._delay.setEnabled(on)
+        for btn in self.findChildren(QPushButton):
+            btn.setEnabled(on)

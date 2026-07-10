@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
                                QLabel, QPushButton, QSpinBox, QVBoxLayout)
 
 from .. import protocol as P
-from ..theme import COLORS
 
 
 def _mono(px: int) -> QFont:
@@ -91,11 +90,7 @@ class DriverPanel(QGroupBox):
         self._cfg = QLabel("mode=?  run=?  hold=?  microsteps=?  ready=?")
         self._cfg.setFont(_mono(10))
         self._cfg.setWordWrap(True)
-        self._cfg.setStyleSheet(
-            f"color: {COLORS['text_dim']};"
-            f" background: {COLORS.get('well', '#0b0f16')};"
-            f" border: 1px solid {COLORS.get('border', '#1f2735')};"
-            " border-radius: 6px; padding: 4px;")
+        self._cfg.setProperty("well", "true")
         root.addWidget(self._cfg)
 
     @staticmethod
@@ -110,3 +105,14 @@ class DriverPanel(QGroupBox):
             f"mode={d.get('mode', '?')}  run={d.get('run', '?')}  "
             f"hold={d.get('hold', '?')}  microsteps={d.get('microsteps', '?')}  "
             f"ready={d.get('ready', '?')}")
+
+    def reset(self) -> None:
+        """Сброс строки конфигурации (при смене канала — не показываем старое)."""
+        self._cfg.setText("mode=?  run=?  hold=?  microsteps=?  ready=?")
+
+    def set_enabled_controls(self, on: bool) -> None:
+        self._irun.setEnabled(on)
+        self._ihold.setEnabled(on)
+        self._mstep.setEnabled(on)
+        for btn in self.findChildren(QPushButton):
+            btn.setEnabled(on)

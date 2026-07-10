@@ -7,9 +7,10 @@
  * - нет обмена с энкодером LENZ IRS (SPI/BiSS C не инициализируются);
  * - нет управления TMC2209 (USART2, TIM4, STEP/DIR не используются).
  *
- * Вместо этого движение моделируется программно: виртуальная позиция
- * перемещается к цели с ограничением скорости MAX_SPEED_DEG_S, как реальный
- * мотор в open-loop. Телеметрия всегда показывает штатную работу: ec:0, m:cl.
+ * Вместо этого движение моделируется программно: виртуальная позиция плавно
+ * идёт к цели с профилем скорости/ускорения (v=/a=), как open-loop ветка
+ * MotorControl_Tick основной прошивки (g_ol_pos += v — без квантования в шаги).
+ * Телеметрия всегда показывает штатную работу: ec:0, m:cl.
  *
  * Поддерживаются все команды основной прошивки: en, dis, t=, t=+/-, kp/ki/kd=,
  * op=, debug=, scan=, stop, irun, ihold, icur, mstep, mcfg, diag — с теми же
@@ -42,7 +43,6 @@ static void Scan_Tick(void);
 /* --- Константы (те же формулы, что в основной прошивке) --- */
 
 #define DEG_PER_STEP     (360.0f / (float)MOTOR_STEPS_PER_REV)
-#define MAX_DEG_PER_TICK ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ)
 
 /* Стартовая виртуальная позиция: ненулевая, чтобы после сброса был виден
  * «хоминг» в 0°, как у реальной платы. */
@@ -52,9 +52,6 @@ static inline int32_t DegToSteps(float deg)
 { return (int32_t)(deg / DEG_PER_STEP); }
 
 static inline float clampf(float v, float lo, float hi)
-{ return (v < lo) ? lo : (v > hi) ? hi : v; }
-
-static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi)
 { return (v < lo) ? lo : (v > hi) ? hi : v; }
 
 static inline float shortest_path_err(float target, float pos)
@@ -92,7 +89,6 @@ static float    g_kd = PID_KD_DEFAULT;
 static float    g_vmax_deg_s   = SPEED_DEFAULT_DEG_S;  ///< Предел скорости, град/с
 static float    g_accel_deg_s2 = ACCEL_DEFAULT_DEG_S2; ///< Предел ускорения, град/с² (0=выкл)
 static float    g_vel_cmd      = 0;                    ///< Текущая слew-скорость, град/тик
-static float    g_move_accum   = 0;                    ///< Накопитель дробных микрошагов
 
 static inline float vmax_per_tick(void)
 { return g_vmax_deg_s / (float)POLL_FREQ_HZ; }
@@ -142,11 +138,13 @@ static uint16_t  g_scan_delay_cnt= 0;
 static int8_t    g_scan_dir      = 1;
 static int8_t    g_scan_inf      = 0;
 
-/* «Мотор движется» для проверки busy в mstep/diag (аналог tmc2209_motor_is_moving) */
+/* «Мотор движется» для проверки busy в mstep/diag. В основной прошивке diag
+ * занят при (g_cont_dir != 0 || g_scan_st != SCAN_IDLE || motor_is_moving()) —
+ * скан считается движением даже в паузе между точками (вал в SCAN_DELAY). */
 static uint8_t Sim_IsMoving(void)
 {
+    if (g_cont_dir != 0 || g_scan_st != SCAN_IDLE) return 1;
     if (!g_enabled) return 0;
-    if (g_cont_dir != 0) return 1;
     float err = g_target_deg - g_sim_pos_deg;
     return (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) ? 1U : 0U;
 }
@@ -208,8 +206,11 @@ int main(void)
  * @brief Расчет виртуального перемещения за тик.
  *
  * Модель повторяет open-loop ветку MotorControl_Tick основной прошивки:
- * перемещение к цели ограничено MAX_DEG_PER_TICK и квантуется в микрошаги,
- * чтобы значения телеметрии выглядели как у реального привода.
+ * скорость на тик даёт профиль Motion_Limit (v=/a=), а позиция интегрируется
+ * плавно (g_sim_pos_deg += v) — как g_ol_pos += v в прошивке, без квантования
+ * в микрошаги. Поэтому cp/u в телеметрии совпадают с реальной платой (там cp
+ * приходит с 17-битного энкодера, а u = скомандованная скорость град/тик).
+ * Доводка в deadband повторяет финальный доворот CL-ветки (снап DegToSteps).
  */
 static void MotorControl_Tick(void)
 {
@@ -222,14 +223,9 @@ static void MotorControl_Tick(void)
     if (g_cont_dir != 0) {
         /* Непрерывное вращение на пределе v= с рампой a= (как в основной) */
         float v = Motion_Limit((float)g_cont_dir * vmax_per_tick(), 0, 0);
-        g_move_accum = clampf(g_move_accum + v, -MAX_DEG_PER_TICK, MAX_DEG_PER_TICK);
-        int32_t steps = clampi(DegToSteps(g_move_accum),
-                               -(int32_t)MAX_STEPS_PER_POLL, (int32_t)MAX_STEPS_PER_POLL);
-        if (steps) g_move_accum -= (float)steps * DEG_PER_STEP;
-        float moved  = (float)steps * DEG_PER_STEP;
-        g_last_ctrl   = moved;
-        g_sim_pos_deg += moved;
-        g_target_deg  += moved;
+        g_sim_pos_deg += v;
+        g_target_deg  += v;
+        g_last_ctrl    = v;
         if (g_sim_pos_deg > 1e7f || g_sim_pos_deg < -1e7f)
             g_sim_pos_deg = g_target_deg = 0;
         return;
@@ -239,24 +235,19 @@ static void MotorControl_Tick(void)
 
     if (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) {
         g_was_outside_db = 1;
-        float move = Motion_Limit(err, err, 1);
-        g_move_accum = clampf(g_move_accum + move, -MAX_DEG_PER_TICK, MAX_DEG_PER_TICK);
-        int32_t steps = clampi(DegToSteps(g_move_accum),
-                               -(int32_t)MAX_STEPS_PER_POLL, (int32_t)MAX_STEPS_PER_POLL);
-        if (steps) {
-            if (g_scan_st == SCAN_MOVING)
-                HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
-            g_move_accum  -= (float)steps * DEG_PER_STEP;
-            g_sim_pos_deg += (float)steps * DEG_PER_STEP;
-            g_last_ctrl    = (float)steps * DEG_PER_STEP;
-        } else {
-            g_last_ctrl = move;
-        }
+        float v = Motion_Limit(err, err, 1);
+        if (g_scan_st == SCAN_MOVING && v != 0.0f)
+            HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
+        g_sim_pos_deg += v;
+        g_last_ctrl    = v;
     } else {
-        /* Доводка: один микрошаг, если ошибка заметна внутри deadband */
+        /* Доводка до цели: финальный доворот CL-ветки основной прошивки — снап
+         * на DegToSteps(err) садится в пределах одного микрошага от цели. */
         if (g_was_outside_db) {
             if (err > 0.02f || err < -0.02f) {
-                int32_t snap = (err > 0) ? 1 : -1;
+                int32_t snap = DegToSteps(err);
+                if (snap == 0)
+                    snap = (err > 0) ? 1 : -1;
                 if (g_scan_st == SCAN_MOVING)
                     HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
                 g_sim_pos_deg += (float)snap * DEG_PER_STEP;
@@ -270,6 +261,7 @@ static void MotorControl_Tick(void)
             g_scan_st        = SCAN_DELAY;
             g_scan_delay_cnt = 0;
         }
+        g_vel_cmd = 0;   /* цель достигнута — обнуляем скорость рампы (как Control_Reset) */
     }
 }
 
@@ -396,7 +388,6 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_cont_dir = 0;
         g_target_deg = g_sim_pos_deg;
         g_vel_cmd    = 0;
-        g_move_accum = 0;
         SendResponse("ok:en\r\n");
         break;
 
@@ -484,7 +475,6 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_st  = SCAN_IDLE;
         g_target_deg = g_sim_pos_deg;
         g_vel_cmd    = 0;
-        g_move_accum = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         SendResponse("ok:stop\r\n");
         break;

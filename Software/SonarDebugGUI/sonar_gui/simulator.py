@@ -151,7 +151,7 @@ class FirmwareSimulator:
             v = _f(c[2:])
             if v is None:
                 return []
-            if not (P.SPEED_MIN_DEG_S <= v <= P.MAX_SPEED_DEG_S):
+            if not P.speed_ok(v):
                 return [f"err:bad arg (v={P.SPEED_MIN_DEG_S:g}..{P.MAX_SPEED_DEG_S:g})"]
             self.vmax = v
             return [f"ok:v={v:.1f}"]
@@ -159,13 +159,13 @@ class FirmwareSimulator:
             v = _f(c[2:])
             if v is None:
                 return []
-            if not (0 <= v <= P.ACCEL_MAX_DEG_S2):
+            if not P.accel_ok(v):
                 return [f"err:bad arg (a=0..{P.ACCEL_MAX_DEG_S2:g})"]
             self.accel = v
             return [f"ok:a={v:.1f}"]
         if c.startswith("op="):
             n = _i(c[3:])
-            if n is None or not (P.OP_MIN <= n <= P.OP_MAX):
+            if n is None or not P.op_ok(n):
                 return []
             self.op_ms = n
             return [f"ok:op={n}"]
@@ -178,13 +178,13 @@ class FirmwareSimulator:
             return self._cmd_scan(c[5:])
         if c.startswith("irun "):
             n = _i(c[5:])
-            if n is None or not (P.CURRENT_MIN <= n <= P.CURRENT_MAX):
+            if n is None or not P.current_ok(n):
                 return []
             self.irun = n
             return [f"ok:irun={n}"]
         if c.startswith("ihold "):
             n = _i(c[6:])
-            if n is None or not (P.CURRENT_MIN <= n <= P.CURRENT_MAX):
+            if n is None or not P.current_ok(n):
                 return []
             self.ihold = n
             return [f"ok:ihold={n}"]
@@ -195,7 +195,7 @@ class FirmwareSimulator:
             run, hold = _i(parts[0]), _i(parts[1])
             if run is None or hold is None:
                 return []
-            if not (P.CURRENT_MIN <= run <= P.CURRENT_MAX) or not (P.CURRENT_MIN <= hold <= P.CURRENT_MAX):
+            if not P.current_ok(run) or not P.current_ok(hold):
                 return []
             self.irun, self.ihold = run, hold
             return [f"ok:icur={run},{hold}"]
@@ -203,7 +203,7 @@ class FirmwareSimulator:
             if self.is_moving():
                 return ["err:busy stop motor first"]
             n = _i(c[6:])
-            if n not in P.MSTEP_VALUES:
+            if not P.mstep_ok(n):
                 return ["err:bad arg (1/2/4/8/16/32/64/128/256)"]
             self.microsteps = n
             return [f"ok:mstep={n}"]
@@ -228,6 +228,12 @@ class FirmwareSimulator:
         # Валидация → err:scan (прошивка отвечает явной ошибкой)
         if step <= 0 or delay <= 0 or (not inf and not (start < end)):
             return ["err:scan"]
+
+        # Кратчайший заход в сектор: коллапсируем накопленные обороты к кадру
+        # старта. После долгого непрерывного вращения вал иначе «разматывал» бы
+        # многие обороты до первой точки (как homing-коллапс прошивки, main.c
+        # строки 806–808) — визуально скан выглядел бы зависшим.
+        self.cur_deg = start + _wrap180(self.cur_deg - start)
 
         self.scan_active = True
         self.scan_inf = inf
@@ -274,7 +280,15 @@ class FirmwareSimulator:
         if self.cont_dir != 0:
             v = self._limit_velocity(self.cont_dir * self.vmax, None, dt_s)
             delta = v * dt_s
+            # Угол НЕ оборачивается на 360°: как в прошивке (g_target_deg += v,
+            # main.c ~764), позиция накапливается многооборотно — cp растёт через
+            # 360°/720°/… и телеметрия с графиком отражают суммарный поворот.
+            # Размотку перед сканом снимает коллапс к кратчайшему пути в _cmd_scan,
+            # поэтому накопление здесь безопасно.
             self.cur_deg += delta
+            # Предохранитель от неограниченного роста (как прошивка при |pos|>1e7).
+            if self.cur_deg > 1e7 or self.cur_deg < -1e7:
+                self.cur_deg = 0.0
             self.target_deg = self.cur_deg
             self.last_u = delta
             return
@@ -324,6 +338,11 @@ class FirmwareSimulator:
             drp=self.drp, debug=bool(self.debug),
             vmax=self.vmax, accel=self.accel,
         )
+
+
+def _wrap180(x: float) -> float:
+    """Приводит угол к диапазону (-180, 180] — для кратчайшего пути."""
+    return (x + 180.0) % 360.0 - 180.0
 
 
 def _f(s: str):

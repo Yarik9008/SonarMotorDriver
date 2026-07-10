@@ -72,6 +72,29 @@ class Defaults:
 DEFAULTS = Defaults()
 
 
+# ── Предикаты диапазонов (единый источник для GUI-валидации и симулятора) ───
+# Держим границы в одном месте: и клиентская validate(), и FirmwareSimulator
+# сверяют аргументы этими функциями — правки диапазона не расходятся по коду.
+def speed_ok(v: float) -> bool:
+    return SPEED_MIN_DEG_S <= v <= MAX_SPEED_DEG_S
+
+
+def accel_ok(v: float) -> bool:
+    return 0.0 <= v <= ACCEL_MAX_DEG_S2
+
+
+def op_ok(n: int) -> bool:
+    return OP_MIN <= n <= OP_MAX
+
+
+def current_ok(n: int) -> bool:
+    return CURRENT_MIN <= n <= CURRENT_MAX
+
+
+def mstep_ok(n) -> bool:
+    return n in MSTEP_VALUES
+
+
 # ── Форматирование чисел для команд ────────────────────────────────────────
 def fmt_num(v: float) -> str:
     """Компактное число без лишних нулей: 90.0 -> '90', 45.5 -> '45.5'."""
@@ -144,17 +167,17 @@ def validate(cmd: str) -> tuple[bool, str]:
             return (True, "") if _as_float(c[3:]) is not None else (False, f"{pfx} нужно число")
     if c.startswith("v="):
         n = _as_float(c[2:])
-        if n is None or not (SPEED_MIN_DEG_S <= n <= MAX_SPEED_DEG_S):
+        if n is None or not speed_ok(n):
             return False, f"v: скорость {SPEED_MIN_DEG_S:g}..{MAX_SPEED_DEG_S:g} °/с"
         return True, ""
     if c.startswith("a="):
         n = _as_float(c[2:])
-        if n is None or not (0 <= n <= ACCEL_MAX_DEG_S2):
+        if n is None or not accel_ok(n):
             return False, f"a: ускорение 0..{ACCEL_MAX_DEG_S2:g} °/с²"
         return True, ""
     if c.startswith("op="):
         n = _as_int(c[3:])
-        if n is None or not (OP_MIN <= n <= OP_MAX):
+        if n is None or not op_ok(n):
             return False, f"op: целое {OP_MIN}..{OP_MAX}"
         return True, ""
     if c.startswith("debug="):
@@ -171,12 +194,12 @@ def validate(cmd: str) -> tuple[bool, str]:
             return False, "icur: нужно два числа: run hold"
         for p in parts:
             n = _as_int(p)
-            if n is None or not (CURRENT_MIN <= n <= CURRENT_MAX):
+            if n is None or not current_ok(n):
                 return False, f"icur: ток {CURRENT_MIN}..{CURRENT_MAX} мА"
         return True, ""
     if c.startswith("mstep "):
         n = _as_int(c[6:])
-        if n not in MSTEP_VALUES:
+        if not mstep_ok(n):
             return False, "mstep: 1/2/4/8/16/32/64/128/256"
         return True, ""
 
@@ -186,7 +209,7 @@ def validate(cmd: str) -> tuple[bool, str]:
 
 def _validate_current(arg: str, name: str) -> tuple[bool, str]:
     n = _as_int(arg.strip())
-    if n is None or not (CURRENT_MIN <= n <= CURRENT_MAX):
+    if n is None or not current_ok(n):
         return False, f"{name}: ток {CURRENT_MIN}..{CURRENT_MAX} мА"
     return True, ""
 
@@ -258,6 +281,24 @@ def parse_telemetry(line: str) -> dict | None:
             if fv is not None:
                 out[key] = fv
     return out if "cp" in out else None
+
+
+def parse_ok_reply(line: str) -> tuple[str, float | int] | None:
+    """Разбирает ok:ответ и возвращает (ключ_состояния, значение) или None."""
+    s = line.strip()
+    if not s.startswith("ok:"):
+        return None
+    body = s[3:]
+    for pfx, key in (("op=", "op_ms"), ("v=", "v"), ("a=", "a"),
+                     ("kp=", "kp"), ("ki=", "ki"), ("kd=", "kd")):
+        if body.startswith(pfx):
+            raw = body[len(pfx):]
+            if key == "op_ms":
+                iv = _as_int(raw)
+                return (key, iv) if iv is not None else None
+            fv = _as_float(raw)
+            return (key, fv) if fv is not None else None
+    return None
 
 
 def parse_mcfg(line: str) -> dict | None:
