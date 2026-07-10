@@ -291,7 +291,7 @@ int tmc2209_motor_is_moving(void)
 #if MOTOR_DRIVER_MODE == MOTOR_DRIVER_MODE_STEP_DIR_VAL
     return g_pwm_running || (s_pulses_left > 0U);
 #else
-    return s_tmc_ready && (s_drv.vactual != 0);
+    return s_tmc_ready && ((int32_t)s_drv.shadow.vactual != 0);
 #endif
 }
 
