@@ -223,6 +223,9 @@ static void stepdir_steps_internal(int32_t steps)
     s_drv.io.motor_set_rate((uint16_t)arr, (uint16_t)ccr, s_drv.io.ctx);
     g_pwm_running = 1;
     g_cur_arr     = arr;
+    /* Чистим застрявший UIF от предыдущей серии, иначе первое прерывание
+     * сработает мгновенно и доводочная серия укоротится на один шаг. */
+    __HAL_TIM_CLEAR_FLAG(&s_htim_step, TIM_FLAG_UPDATE);
     step_pulse_irq_enable(1);
 }
 #endif

@@ -115,9 +115,17 @@ static void port_motor_set_rate(uint16_t arr, uint16_t ccr, void *ctx)
     tmc2209_hal_ctx_t *hal = (tmc2209_hal_ctx_t *)ctx;
     __HAL_TIM_SET_AUTORELOAD(hal->htim_step, arr - 1U);
     __HAL_TIM_SET_COMPARE(hal->htim_step, hal->tim_channel, ccr);
-    
+
     /* Если таймер ещё не запущен — запускаем */
     if (!(hal->htim_step->Instance->CR1 & TIM_CR1_CEN)) {
+        /* ARPE=1: на остановленном таймере новые ARR/CCR вступили бы в силу
+         * только после первого update — первый период после stop→start шёл бы
+         * со старыми регистрами (лишний импульс неверной длительности при
+         * каждом старте и смене направления). Форсируем загрузку preload и
+         * чистим UIF, чтобы pulse-режим не съел первый шаг. На ходу ARPE не
+         * трогаем — там смена периода безглитчевая. */
+        hal->htim_step->Instance->EGR = TIM_EGR_UG;
+        __HAL_TIM_CLEAR_FLAG(hal->htim_step, TIM_FLAG_UPDATE);
         __HAL_TIM_SET_COUNTER(hal->htim_step, 0);
         HAL_TIM_PWM_Start(hal->htim_step, hal->tim_channel);
     }
