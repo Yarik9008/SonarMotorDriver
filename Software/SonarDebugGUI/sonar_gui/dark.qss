@@ -5,7 +5,7 @@
 
 QWidget {
     background-color: #0a0d13;              /* bg */
-    color: #e8ecf4;                          /* text */
+    color: #e4e7ee;                          /* text */
     font-family: "Segoe UI", "Inter", sans-serif;
     font-size: 13px;
 }
@@ -16,7 +16,7 @@ QMainWindow, QScrollArea, QScrollArea > QWidget > QWidget {
 
 QToolTip {
     background-color: #161c27;               /* surface2 */
-    color: #e8ecf4;
+    color: #e4e7ee;
     border: 1px solid #33405a;               /* border2 */
     border-radius: 6px;
     padding: 4px 8px;
@@ -44,18 +44,18 @@ QGroupBox::title {
     subcontrol-position: top left;
     left: 10px;
     padding: 0 6px;
-    color: #37d6ff;                          /* accent */
+    color: #5aa6c2;                          /* accent */
     background: transparent;
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 600;
 }
 
 /* ---------- Подписи ---------- */
 
 QLabel { background: transparent; }
-QLabel[dim="true"] { color: #93a0b4; }       /* text_dim */
+QLabel[dim="true"] { color: #8f9aad; }       /* text_dim */
 QLabel[well="true"] {
-    color: #93a0b4;
+    color: #8f9aad;
     background: #0b0f16;
     border: 1px solid #1f2735;
     border-radius: 6px;
@@ -64,32 +64,32 @@ QLabel[well="true"] {
 
 /* Чипы-статусы (после смены свойства chip вызывать style().unpolish/polish!) */
 QLabel[chip="ok"] {
-    background: rgba(61, 220, 132, 0.10);
-    color: #3ddc84;                          /* green */
-    border: 1px solid rgba(61, 220, 132, 0.35);
+    background: rgba(95, 170, 130, 0.12);
+    color: #5faa82;                          /* green */
+    border: 1px solid rgba(95, 170, 130, 0.35);
     border-radius: 10px;
     padding: 3px 10px;
     font-weight: 600;
 }
 QLabel[chip="warn"] {
-    background: rgba(255, 180, 84, 0.10);
-    color: #ffb454;                          /* amber */
-    border: 1px solid rgba(255, 180, 84, 0.35);
+    background: rgba(201, 154, 91, 0.12);
+    color: #c99a5b;                          /* amber */
+    border: 1px solid rgba(201, 154, 91, 0.35);
     border-radius: 10px;
     padding: 3px 10px;
     font-weight: 600;
 }
 QLabel[chip="err"] {
-    background: rgba(255, 93, 93, 0.10);
-    color: #ff5d5d;                          /* danger */
-    border: 1px solid rgba(255, 93, 93, 0.35);
+    background: rgba(198, 106, 100, 0.12);
+    color: #c66a64;                          /* danger */
+    border: 1px solid rgba(198, 106, 100, 0.35);
     border-radius: 10px;
     padding: 3px 10px;
     font-weight: 600;
 }
 QLabel[chip="off"] {
-    background: rgba(147, 160, 180, 0.08);
-    color: #93a0b4;                          /* text_dim */
+    background: rgba(143, 154, 173, 0.08);
+    color: #8f9aad;                          /* text_dim */
     border: 1px solid #2b3446;
     border-radius: 10px;
     padding: 3px 10px;
@@ -99,13 +99,13 @@ QLabel[chip="off"] {
 /* ---------- Кнопки ---------- */
 
 /* Единый вторичный стиль кнопок для ОБЕИХ колонок: плоская заливка + рамка.
-   Акцентные варианты — только через objectName (primaryButton/stopButton). */
+   Акцентный вариант — только через objectName (primaryButton). */
 QPushButton {
     background: #1d2531;
     border: 1px solid #2f3a4c;
     border-radius: 7px;
     padding: 5px 12px;
-    color: #e8ecf4;
+    color: #e4e7ee;
 }
 QPushButton:hover {
     background: #242e3c;
@@ -122,50 +122,34 @@ QPushButton:disabled {
 }
 QPushButton:checked {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #0d7396, stop:1 #0a5d7a);
-    border-color: #37d6ff;
-    color: #eafcff;
+                                stop:0 #3f7f95, stop:1 #2a5568);
+    border-color: #5aa6c2;
+    color: #eef6f9;
+}
+
+/* Заголовок сворачиваемой секции («▼ Мотор» и т.п.) — текст у левого края,
+   а не по центру растянутой на всю ширину кнопки. */
+QPushButton#sectionToggle {
+    text-align: left;
+    padding: 6px 10px;
 }
 
 QPushButton#primaryButton {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #0d7396, stop:1 #0a5d7a);
-    border: 1px solid #37d6ff;               /* accent */
-    color: #eafcff;
-    font-weight: 700;
+                                stop:0 #3f7f95, stop:1 #2a5568);
+    border: 1px solid #5aa6c2;               /* accent */
+    color: #eef6f9;
+    font-weight: 600;
 }
 QPushButton#primaryButton:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #1085ac, stop:1 #0c6b8c);
+                                stop:0 #488c9f, stop:1 #305e73);
 }
 QPushButton#primaryButton:pressed {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #0a5d7a, stop:1 #084c64);
+                                stop:0 #2a5568, stop:1 #21444f);
 }
 QPushButton#primaryButton:disabled {
-    background: #12161f;
-    border-color: #1f2735;
-    color: #5c6880;
-}
-
-QPushButton#stopButton {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #a12626, stop:1 #7c1a1a);
-    border: 1px solid #ff5d5d;               /* danger */
-    color: #ffecec;
-    font-weight: 800;
-    min-height: 28px;                        /* ~42px итоговой высоты */
-    font-size: 14px;
-}
-QPushButton#stopButton:hover {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #b52e2e, stop:1 #8d1f1f);
-}
-QPushButton#stopButton:pressed {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                stop:0 #7c1a1a, stop:1 #611212);
-}
-QPushButton#stopButton:disabled {
     background: #12161f;
     border-color: #1f2735;
     color: #5c6880;
@@ -178,13 +162,13 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {
     border: 1px solid #1f2735;               /* border */
     border-radius: 7px;
     padding: 4px 8px;
-    color: #e8ecf4;
-    selection-background-color: #0a5d7a;     /* accent_dim */
-    selection-color: #eafcff;
+    color: #e4e7ee;
+    selection-background-color: #2a5568;     /* accent_dim */
+    selection-color: #eef6f9;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QPlainTextEdit:focus, QTextEdit:focus {
-    border-color: #37d6ff;                   /* accent */
+    border-color: #5aa6c2;                   /* accent */
 }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled,
 QDoubleSpinBox:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
@@ -196,9 +180,9 @@ QComboBox::drop-down { border: none; width: 18px; }
 QComboBox QAbstractItemView {
     background-color: #10141c;               /* surface */
     border: 1px solid #33405a;               /* border2 */
-    selection-background-color: #0a5d7a;
-    selection-color: #eafcff;
-    color: #e8ecf4;
+    selection-background-color: #2a5568;
+    selection-color: #eef6f9;
+    color: #e4e7ee;
     outline: none;
 }
 
@@ -216,8 +200,8 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:hover { border-color: #33405a; }
 QCheckBox::indicator:checked {
-    background-color: #37d6ff;               /* accent */
-    border-color: #37d6ff;
+    background-color: #5aa6c2;               /* accent */
+    border-color: #5aa6c2;
 }
 
 QRadioButton { spacing: 6px; background: transparent; }
@@ -229,7 +213,7 @@ QRadioButton::indicator {
 }
 QRadioButton::indicator:hover { border-color: #33405a; }
 QRadioButton::indicator:checked {
-    background-color: #37d6ff;               /* accent */
+    background-color: #5aa6c2;               /* accent */
     border: 4px solid #0b0f16;
 }
 
@@ -267,7 +251,7 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 QStatusBar {
     background-color: #0b0f16;               /* well */
-    color: #93a0b4;                          /* text_dim */
+    color: #8f9aad;                          /* text_dim */
     border-top: 1px solid #1f2735;           /* border */
 }
 QStatusBar::item { border: none; }

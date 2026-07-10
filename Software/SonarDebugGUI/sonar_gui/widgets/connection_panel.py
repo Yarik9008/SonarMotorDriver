@@ -1,21 +1,19 @@
-"""ConnectionPanel — выбор канала (Симулятор / Реальный COM) и подключение."""
+"""ConnectionPanel — канал связи (Симулятор / Реальный COM) и настройки телеметрии."""
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QGroupBox, QHBoxLayout,
-                               QLabel, QPushButton, QRadioButton, QVBoxLayout)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QGroupBox,
+                               QHBoxLayout, QLabel, QPushButton, QRadioButton,
+                               QSpinBox, QVBoxLayout, QWidget)
 
+from .. import protocol as P
+from ..device_state import DeviceState
+from ..metrics import METRICS, label
+from ..theme import set_chip
 from ..transport.serial_transport import find_stm32_port, list_serial_ports
-
-
-def _set_chip(label: QLabel, state: str, text: str | None = None) -> None:
-    if text is not None:
-        label.setText(text)
-    label.setProperty("chip", state)
-    st = label.style()
-    st.unpolish(label)
-    st.polish(label)
-
+from .param_row import ParamRow
 
 _PORT_LABEL_MAX = 34  # символов в закрытом комбобоксе; полный текст — в тултипе
 
@@ -28,8 +26,9 @@ class ConnectionPanel(QGroupBox):
     connect_requested = Signal(str, str)
     disconnect_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, send: Callable[[str], bool], parent=None):
         super().__init__("ПОДКЛЮЧЕНИЕ", parent)
+        self._send = send
         self._connected = False
 
         root = QVBoxLayout(self)
@@ -48,7 +47,9 @@ class ConnectionPanel(QGroupBox):
         row_mode.addStretch(1)
         root.addLayout(row_mode)
 
-        row_port = QHBoxLayout()
+        self._port_row = QWidget()
+        row_port = QHBoxLayout(self._port_row)
+        row_port.setContentsMargins(0, 0, 0, 0)
         lbl_port = QLabel("Порт")
         lbl_port.setProperty("dim", "true")
         self._port = QComboBox()
@@ -57,14 +58,13 @@ class ConnectionPanel(QGroupBox):
         self._port.setMinimumContentsLength(12)
         self._port.setMinimumWidth(120)
         self._port.currentIndexChanged.connect(self._update_port_tooltip)
-        self._btn_refresh = QPushButton("⟳")
-        self._btn_refresh.setFixedWidth(34)
+        self._btn_refresh = QPushButton("Обновить")
         self._btn_refresh.setToolTip("Обновить список портов")
         self._btn_refresh.clicked.connect(self.refresh_ports)
         row_port.addWidget(lbl_port)
         row_port.addWidget(self._port, 1)
         row_port.addWidget(self._btn_refresh)
-        root.addLayout(row_port)
+        root.addWidget(self._port_row)
 
         self._btn = QPushButton("Подключить")
         self._btn.setObjectName("primaryButton")
@@ -75,9 +75,29 @@ class ConnectionPanel(QGroupBox):
         self._status = QLabel()
         self._status.setMinimumWidth(160)
         self._status.setTextFormat(Qt.TextFormat.PlainText)
-        _set_chip(self._status, "off", "Не подключено")
+        set_chip(self._status, "off", "Не подключено")
         row_status.addWidget(self._status, 1)
         root.addLayout(row_status)
+
+        # Телеметрия: период и полнота потока — настройки самого канала данных.
+        lbl_tel = QLabel("Телеметрия")
+        lbl_tel.setProperty("dim", "true")
+        root.addWidget(lbl_tel)
+
+        self._op = QSpinBox()
+        self._op.setRange(P.OP_MIN, P.OP_MAX)
+        self._op.setValue(P.DEFAULTS.op_ms)
+        self._row_op = ParamRow(
+            label("op"), self._op,
+            lambda: self._send(P.cmd_op(self._op.value())),
+            METRICS["op"].tooltip)
+        self._row_op.set_format("{:.0f}")
+        root.addWidget(self._row_op)
+
+        self._debug = QCheckBox("Полная телеметрия (debug=1)")
+        self._debug.setToolTip("Полная телеметрия: ошибка, управление, PID, потери кадров")
+        self._debug.toggled.connect(lambda on: self._send(P.cmd_debug(on)))
+        root.addWidget(self._debug)
 
         self.refresh_ports()
         self._on_mode()
@@ -107,6 +127,7 @@ class ConnectionPanel(QGroupBox):
 
     def _on_mode(self) -> None:
         serial = self._rb_serial.isChecked()
+        self._port_row.setVisible(serial)
         self._port.setEnabled(serial and not self._connected)
         self._btn_refresh.setEnabled(serial and not self._connected)
 
@@ -145,9 +166,14 @@ class ConnectionPanel(QGroupBox):
             state = "off"
         self._status.setText(text)
         self._status.setToolTip(text)
-        _set_chip(self._status, state)
+        set_chip(self._status, state)
+
+    def apply_state(self, st: DeviceState) -> None:
+        self._row_op.set_confirmed(st.op_ms)
+
+    def reset(self) -> None:
+        self._row_op.reset()
 
     def set_enabled_controls(self, on: bool) -> None:
-        if not self._connected:
-            return
-        self._btn.setEnabled(on)
+        self._row_op.setEnabled(on)
+        self._debug.setEnabled(on)

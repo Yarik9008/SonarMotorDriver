@@ -88,6 +88,12 @@ class TelemetryPlot(QWidget):
         self._plot.scene().addItem(self._vb_right)
         self._plot.getAxis("right").linkToView(self._vb_right)
         self._vb_right.setXLink(self._plot)
+        # ViewBox правой оси живёт отдельно от основной сцены и сама не следит
+        # за её геометрией — без ручной синхронизации кривая «u» рисуется в
+        # дефолтном квадрате 50×50 в углу сцены, а не поверх графика (баг с
+        # некорректной отрисовкой при полной телеметрии, debug=1).
+        self._plot.getViewBox().sigResized.connect(self._sync_right_viewbox)
+        self._sync_right_viewbox()
 
         for name in ("left", "bottom", "right"):
             ax = self._plot.getAxis(name)
@@ -131,6 +137,10 @@ class TelemetryPlot(QWidget):
         self._redraw.setInterval(_REDRAW_MS)
         self._redraw.timeout.connect(self._refresh)
         self._redraw.start()
+
+    def _sync_right_viewbox(self) -> None:
+        """Держит ViewBox правой оси (Управление) в одной геометрии с основной."""
+        self._vb_right.setGeometry(self._plot.getViewBox().sceneBoundingRect())
 
     def add_sample(self, data: dict) -> None:
         if pg is None or self._paused or "cp" not in data:

@@ -90,4 +90,4 @@ class SimTransport(Transport):
         return self._open
 
     def describe(self) -> str:
-        return "Симулятор (без железа)"
+        return "Симулятор"

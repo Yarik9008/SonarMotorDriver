@@ -918,6 +918,11 @@ static uint8_t  s_stall_have_ref = 0;
 static uint32_t s_stall_ticks    = 0;  ///< Длительность текущего окна, тиков
 static uint16_t s_stall_idle     = 0;  ///< Тиков подряд без команды движения
 static char     s_stall_msg[64];       ///< Отчёт об ошибке, ждущий места в UART TX
+/* Защёлка stall для телеметрии: удерживает ec = ERR_STALL после срабатывания
+ * защиты (драйвер выключен) до явной команды en. Иначе ec на следующем же
+ * тике вернулся бы к ERR_OK (энкодер-то отвечает), и причина остановки в
+ * поле ec пропала бы. */
+static uint8_t  g_stall_latched  = 0;
 
 static void Stall_Reset(void)
 {
@@ -1007,7 +1012,8 @@ static void Stall_Tick(uint8_t enc_ok)
     }
 
     /* Вал заблокирован: обесточиваем драйвер и докладываем */
-    g_enabled  = 0;
+    g_enabled     = 0;
+    g_stall_latched = 1;           /* держим ec = ERR_STALL до команды en */
     g_cont_dir = 0;
     g_scan_st  = SCAN_IDLE;
     g_scan_inf = 0;
@@ -1056,8 +1062,15 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
     /* Позиция по режиму: в CL — последняя валидная позиция энкодера (не
      * дёргается при единичном пропуске чтения), в OL — виртуальный счётчик. */
     double deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
-    uint8_t ec = enc_ok ? ERR_OK
-                        : (g_enc_outlier ? (uint8_t)ERR_ENC_OUTLIER : (uint8_t)st);
+    /* Приоритет: активная ошибка энкодера важнее защёлки stall (иначе новый
+     * обрыв связи с энкодером скрылся бы за «старой» блокировкой вала). */
+    uint8_t ec;
+    if (!enc_ok)
+        ec = g_enc_outlier ? (uint8_t)ERR_ENC_OUTLIER : (uint8_t)st;
+    else if (g_stall_latched)
+        ec = (uint8_t)ERR_STALL;
+    else
+        ec = (uint8_t)ERR_OK;
     int len;
 
     if (g_telem_debug)
@@ -1154,6 +1167,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
 
     case CMD_ENABLE:
         g_enabled  = 1;
+        g_stall_latched = 0;       /* en — штатное восстановление после stall */
         g_cont_dir = 0;
         tmc2209_motor_set_enabled(1);
         Control_Reset();

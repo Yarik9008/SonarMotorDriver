@@ -92,6 +92,7 @@ class FirmwareSimulator:
         if c == "en":
             self.enabled = True
             self.cont_dir = 0
+            self.vel = 0.0          # как Control_Reset() прошивки: рампа стартует с нуля
             return ["ok:en"]
         if c == "dis":
             self.enabled = False

@@ -3,8 +3,6 @@
  * @brief Реализация порта BiSS-C для Arduino SPI API.
  */
 
-#if defined(ARDUINO)
-
 #include "biss_encoder/biss_port_arduino.h"
 #include <Arduino.h>
 
@@ -55,5 +53,3 @@ void biss_port_arduino_fill(biss_port_t *port, biss_arduino_ctx_t *ctx)
     port->spi_abort             = NULL;
     port->ctx                   = ctx;
 }
-
-#endif /* ARDUINO */

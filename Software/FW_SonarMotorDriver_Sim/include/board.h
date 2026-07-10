@@ -73,7 +73,7 @@
 /* -------- Профиль движения (v= и a=) — как в основной прошивке -------- */
 #define SPEED_DEFAULT_DEG_S     (float)MAX_SPEED_DEG_S  /* Стартовый предел скорости */
 #define SPEED_MIN_DEG_S         1.0f    /* Нижняя граница для v= */
-#define ACCEL_DEFAULT_DEG_S2    0.0f    /* Стартовый предел ускорения (0 = выкл) */
+#define ACCEL_DEFAULT_DEG_S2    2000.0f /* Стартовый предел ускорения, град/с² (0 = рампа выкл) */
 #define ACCEL_MAX_DEG_S2        100000.0f /* Верхняя граница для a= */
 #define STEP_PORT               GPIOB
 #define STEP_PIN                GPIO_PIN_8
@@ -167,6 +167,7 @@ typedef enum {
     ERR_BISS_WARN,      ///< Предупреждение от датчика (бит Warning)
     ERR_BISS_SPI,       ///< Ошибка обмена по SPI (HAL Error)
     ERR_ENC_OUTLIER,    ///< Выброс показания энкодера (отфильтрован)
+    ERR_STALL,          ///< Заблокирован вал (защита stall; имитатор его не воспроизводит)
     ERR_COUNT
 } ErrCode;
 

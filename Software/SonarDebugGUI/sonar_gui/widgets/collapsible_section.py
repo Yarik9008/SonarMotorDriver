@@ -21,6 +21,7 @@ class CollapsibleSection(QWidget):
         root.setSpacing(0)
 
         self._toggle = QPushButton()
+        self._toggle.setObjectName("sectionToggle")
         self._toggle.setFlat(True)
         self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle.clicked.connect(self._on_toggle)

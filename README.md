@@ -1,8 +1,8 @@
 # SonarMotorDriver
 
-Проект драйвера шагового двигателя с замкнутым контуром управления (PID) по абсолютному энкодеру LENZ IRS (BiSS C). В репозитории — прошивка для **STM32F103C8**, 3D-сборка платы, даташиты и иллюстрации.
+SonarMotorDriver — драйвер шагового двигателя с замкнутым контуром позиционирования (PID) по абсолютному энкодеру LENZ IRS (BiSS C), предназначенный для наведения гидроакустической антенны. В репозитории — прошивка для **STM32F103C8**, 3D-модель платы, даташиты компонентов и иллюстрации.
 
-> **Примечание:** Управление TMC2209 по UART (ток, микрошаг, вращение) проверено на аппаратуре целевой платы — мотор вращается, энкодер отвечает, драйвер подтверждает конфигурацию (`mcfg`). Пин **DIAG** (StallGuard/Open Load) разведён, но программно не опрашивается.
+> **Статус:** управление TMC2209 по UART (ток, микрошаг, вращение) проверено на аппаратуре целевой платы — мотор вращается, энкодер отвечает, драйвер подтверждает конфигурацию (`mcfg`). Пин **DIAG** (StallGuard/Open Load) разведён, но программно не опрашивается.
 
 ## Иллюстрации
 
@@ -20,9 +20,13 @@
 |---------|----------|
 | [**Software/FW_SonarMotorDriver/**](Software/FW_SonarMotorDriver/) | Основная прошивка STM32F103C8: PID, энкодер BiSS C, TMC2209, **UART** (команды и телеметрия), IWDG |
 | [**Software/FW_SonarMotorDriver_Sim/**](Software/FW_SonarMotorDriver_Sim/) | Имитатор основной прошивки: тот же UART-протокол (команды и телеметрия), но без реального энкодера и TMC2209 — для отладки ПО верхнего уровня без подключённого мотора |
-| [**Software/Test_TMC2209/**](Software/Test_TMC2209/) | Отладочная прошивка **STM32F103C8** + TMC2209: **UART CLI** через внешний USB-UART переходник, проверка драйвера отдельно от основной платы |
-| [**Hardware/CAD/**](Hardware/CAD/) | 3D-модели (SolidWorks/STEP): сборка с радиатором и кожухом, радиатор, STEP компонентов BOM |
+| [**Software/FW_Test_TMC2209/**](Software/FW_Test_TMC2209/) | Отладочная прошивка **STM32F103C8** + TMC2209: **UART CLI** через внешний USB-UART переходник, проверка драйвера отдельно от основной платы |
+| [**Software/SonarDebugGUI/**](Software/SonarDebugGUI/) | Графическое приложение (PySide6) для отладки основной прошивки: полное покрытие UART-протокола, PPI-диаграмма антенны, живая телеметрия, встроенный симулятор — работает без железа |
+| [**Software/lib/biss_encoder_stm32cube/**](Software/lib/biss_encoder_stm32cube/) | Драйвер BiSS-C для LENZ IRS (STM32Cube HAL, SPI + DMA) |
+| [**Software/lib/biss_encoder_arduino/**](Software/lib/biss_encoder_arduino/) | Драйвер BiSS-C для LENZ IRS (Arduino / STM32duino) |
+| [**Hardware/CAD/**](Hardware/CAD/) | 3D-модели (SolidWorks/STEP): сборка с радиатором и кожухом, радиатор, STEP-файлы компонентов из BOM |
 | [**Docs/Datasheet/**](Docs/Datasheet/) | PDF-даташиты ключевых компонентов (STM32, TMC2209, THVD1452, питание, разъёмы и т.д.) |
+| [**Release/**](Release/) | Готовые образы прошивок (Intel HEX) — основная и имитатор, с SHA256 и параметрами сборки |
 | [**Image/**](Image/) | Рендеры платы и CAD для документации |
 
 ## Возможности (основная прошивка)
@@ -43,10 +47,10 @@ pio run                    # сборка
 pio run --target upload    # прошивка (см. platformio.ini: ST-Link / WCH-Link + OpenOCD)
 ```
 
-Имитатор UART-протокола (без мотора и энкодера): [Software/FW_SonarMotorDriver_Sim/README.md](Software/FW_SonarMotorDriver_Sim/README.md).
-Тестовая прошивка драйвера TMC2209: [Software/Test_TMC2209/README.md](Software/Test_TMC2209/README.md).
+Имитатор и тестовый стенд TMC2209 собираются так же, из своих каталогов — команды и подробности в README каждого из них (см. таблицу выше). GUI-отладчик [SonarDebugGUI](Software/SonarDebugGUI/) запускается отдельно, без PlatformIO. Прошивать без сборки можно готовыми образами из [Release/](Release/).
 
 ## Требования
 
 - **PlatformIO** — сборка прошивок в `Software/`
 - **Программатор** — ST-Link, CMSIS-DAP или иной, совместимый с настройками `upload` в `platformio.ini`
+- **Python 3.10+** — только для [SonarDebugGUI](Software/SonarDebugGUI/) (`pip install -r requirements.txt`), сборки прошивок не требует

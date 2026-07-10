@@ -1,9 +1,9 @@
-"""HeaderBar — шапка: бренд, чип подключения, единственный бейдж режима."""
+"""HeaderBar — шапка: бренд, единственный бейдж режима."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from ..device_state import DeviceState
 from ..metrics import mode_label
@@ -26,20 +26,12 @@ class HeaderBar(QWidget):
         root.setContentsMargins(SPACE_LG, 6, SPACE_LG, 6)
         root.setSpacing(12)
 
-        brand = QVBoxLayout()
-        brand.setContentsMargins(0, 0, 0, 0)
-        brand.setSpacing(0)
         title = QLabel("◉ SONAR DEBUG")
         title.setStyleSheet(
             f'color:{COLORS["accent"]}; font-family:{FONT_MONO}; '
             "font-size:16px; font-weight:800; letter-spacing:2px; "
             "background:transparent;")
-        subtitle = QLabel("FW_SonarMotorDriver · STM32F103")
-        subtitle.setStyleSheet(
-            f'color:{COLORS["text_faint"]}; font-size:11px; background:transparent;')
-        brand.addWidget(title)
-        brand.addWidget(subtitle)
-        root.addLayout(brand)
+        root.addWidget(title)
         root.addStretch(1)
 
         self._mode_chip = QLabel("")
@@ -47,24 +39,7 @@ class HeaderBar(QWidget):
         self._mode_chip.hide()
         root.addWidget(self._mode_chip)
 
-        self._conn_chip = QLabel("НЕ ПОДКЛЮЧЕНО")
-        self._conn_chip.setProperty("chip", "off")
-        self._conn_chip.setMinimumWidth(120)
-        self._conn_chip.setToolTip("Состояние канала связи")
-        root.addWidget(self._conn_chip)
-
     def apply_state(self, st: DeviceState) -> None:
-        if st.connected:
-            state = "warn" if st.channel_warn else "ok"
-            self._conn_chip.setText(st.channel)
-            self._conn_chip.setToolTip(st.channel)
-        else:
-            state = "off"
-            self._conn_chip.setText(st.channel or "НЕ ПОДКЛЮЧЕНО")
-            self._conn_chip.setToolTip("")
-        self._conn_chip.setProperty("chip", state)
-        _repolish(self._conn_chip)
-
         if st.connected and st.has_telemetry and st.m:
             m = st.m.lower()
             if m == "cl":

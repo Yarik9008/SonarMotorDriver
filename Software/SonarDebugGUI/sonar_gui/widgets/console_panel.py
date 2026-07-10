@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (QCheckBox, QGroupBox, QHBoxLayout, QLineEdit,
 from ..theme import COLORS, mono_font
 
 _PREFIX = {
-    "TX":   ("→", COLORS["accent"]),
-    "RX":   ("←", COLORS["green"]),
+    "TX":   ("•", COLORS["accent"]),
+    "RX":   ("•", COLORS["green"]),
     "ERR":  ("✕", COLORS["danger"]),
     "INFO": ("·", COLORS["text_faint"]),
 }

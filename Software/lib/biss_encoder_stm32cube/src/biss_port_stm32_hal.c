@@ -3,8 +3,6 @@
  * @brief Реализация порта BiSS-C на STM32Cube HAL.
  */
 
-#if defined(USE_HAL_DRIVER)
-
 #include "biss_encoder/biss_port_stm32_hal.h"
 #include <string.h>
 
@@ -244,5 +242,3 @@ biss_hal_ctx_t *biss_port_stm32_hal_get_active_ctx(void)
 {
     return s_active_ctx;
 }
-
-#endif /* USE_HAL_DRIVER */

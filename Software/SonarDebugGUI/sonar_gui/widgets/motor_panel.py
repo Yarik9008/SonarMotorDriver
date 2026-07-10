@@ -1,25 +1,29 @@
-"""MotorPanel — вкл/выкл, целевой угол, скорость/ускорение, джог."""
+"""MotorPanel — мотор, PID-профиль, джог, драйвер TMC2209 и калибровка антенны."""
 from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (QButtonGroup, QDoubleSpinBox, QGroupBox,
-                               QHBoxLayout, QLabel, QPushButton, QRadioButton,
-                               QSizePolicy, QVBoxLayout)
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDoubleSpinBox,
+                               QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+                               QPushButton, QRadioButton, QSizePolicy,
+                               QSpinBox, QVBoxLayout)
 
 from .. import protocol as P
 from ..device_state import DeviceState
 from ..metrics import METRICS, label
-from ..theme import COLORS, mono_font
+from ..theme import COLORS, metric_color, mono_font, set_chip
 from .param_row import ParamRow
 
 
 class MotorPanel(QGroupBox):
+    antenna_config_changed = Signal(float, float, int)   # scale, offset, sign
+
     def __init__(self, send: Callable[[str], bool], parent=None):
         super().__init__("МОТОР", parent)
         self._send = send
+        self._s = QSettings("SonarMotorDriver", "SonarDebugGUI")
         d = P.DEFAULTS
         root = QVBoxLayout(self)
         root.setSpacing(6)
@@ -45,7 +49,7 @@ class MotorPanel(QGroupBox):
                                    QSizePolicy.Policy.Fixed)
         self._target.setMinimumWidth(90)
         self._target.installEventFilter(self)
-        b_go = QPushButton("→ Перейти")
+        b_go = QPushButton("Перейти")
         b_go.clicked.connect(self._go)
         row_t.addWidget(lbl_t)
         row_t.addWidget(self._target, 1)
@@ -56,6 +60,17 @@ class MotorPanel(QGroupBox):
         self._echo_tp.setMinimumWidth(72)
         row_t.addWidget(self._echo_tp)
         root.addLayout(row_t)
+
+        row_pe = QHBoxLayout()
+        lbl_pe = QLabel(label("pe"))
+        lbl_pe.setProperty("dim", "true")
+        lbl_pe.setToolTip(METRICS["pe"].tooltip)
+        self._pe_val = QLabel("—")
+        self._pe_val.setFont(mono_font(13))
+        self._pe_val.setStyleSheet(f"color: {metric_color('pe')};")
+        row_pe.addWidget(lbl_pe)
+        row_pe.addWidget(self._pe_val, 1)
+        root.addLayout(row_pe)
 
         self._speed = QDoubleSpinBox()
         self._speed.setRange(P.SPEED_MIN_DEG_S, P.MAX_SPEED_DEG_S)
@@ -95,8 +110,8 @@ class MotorPanel(QGroupBox):
         root.addLayout(row_speed)
 
         row_jog = QHBoxLayout()
-        b_ccw = QPushButton("⟲ Против")
-        b_cw = QPushButton("⟳ По час.")
+        b_ccw = QPushButton("Против")
+        b_cw = QPushButton("По час.")
         b_ccw.pressed.connect(lambda: self._jog_start("-"))
         b_ccw.released.connect(self._jog_stop)
         b_cw.pressed.connect(lambda: self._jog_start("+"))
@@ -109,6 +124,139 @@ class MotorPanel(QGroupBox):
         row_jog.addWidget(b_ccw, 1)
         row_jog.addWidget(b_cw, 1)
         root.addLayout(row_jog)
+
+        row_st = QHBoxLayout()
+        row_st.setSpacing(6)
+        self._ec = QLabel()
+        set_chip(self._ec, "off", f"{METRICS['ec'].short} —")
+        self._ec.setToolTip(METRICS["ec"].tooltip)
+        self._drp = QLabel(f"{METRICS['drp'].short} —")
+        self._drp.setProperty("dim", "true")
+        self._drp.setFont(mono_font(12, bold=False))
+        self._drp.setToolTip(METRICS["drp"].tooltip)
+        row_st.addWidget(self._ec)
+        row_st.addStretch(1)
+        row_st.addWidget(self._drp)
+        root.addLayout(row_st)
+
+        # Драйвер TMC2209: токи движения/удержания, микрошаг, конфигурация (mcfg).
+        lbl_drv = QLabel("Драйвер TMC2209")
+        lbl_drv.setProperty("dim", "true")
+        root.addWidget(lbl_drv)
+
+        grid_drv = QGridLayout()
+        grid_drv.setHorizontalSpacing(8)
+        grid_drv.setColumnStretch(1, 1)
+        self._irun = self._cur_spin(d.irun)
+        self._ihold = self._cur_spin(d.ihold)
+
+        cap_run = QLabel("I движ., мА")
+        cap_run.setProperty("dim", "true")
+        grid_drv.addWidget(cap_run, 0, 0)
+        grid_drv.addWidget(self._irun, 0, 1)
+        b_irun = QPushButton("✓")
+        b_irun.setFixedWidth(34)
+        b_irun.setToolTip("Применить ток движения (irun)")
+        b_irun.clicked.connect(lambda: self._send(P.cmd_irun(self._irun.value())))
+        grid_drv.addWidget(b_irun, 0, 2)
+
+        cap_hold = QLabel("I удерж., мА")
+        cap_hold.setProperty("dim", "true")
+        grid_drv.addWidget(cap_hold, 1, 0)
+        grid_drv.addWidget(self._ihold, 1, 1)
+        b_ihold = QPushButton("✓")
+        b_ihold.setFixedWidth(34)
+        b_ihold.setToolTip("Применить ток удержания (ihold)")
+        b_ihold.clicked.connect(lambda: self._send(P.cmd_ihold(self._ihold.value())))
+        grid_drv.addWidget(b_ihold, 1, 2)
+        root.addLayout(grid_drv)
+
+        row_ms = QHBoxLayout()
+        cap_ms = QLabel("Микрошаг")
+        cap_ms.setProperty("dim", "true")
+        row_ms.addWidget(cap_ms)
+        self._mstep = QComboBox()
+        for v in P.MSTEP_VALUES:
+            self._mstep.addItem(str(v), v)
+        self._mstep.setCurrentText(str(d.microsteps))
+        row_ms.addWidget(self._mstep, 1)
+        b_ms = QPushButton("✓")
+        b_ms.setFixedWidth(34)
+        b_ms.setToolTip("Применить микрошаг (mstep) — только на остановленном моторе")
+        b_ms.clicked.connect(lambda: self._send(P.cmd_mstep(self._mstep.currentData())))
+        row_ms.addWidget(b_ms)
+        root.addLayout(row_ms)
+
+        row_act = QHBoxLayout()
+        b_icur = QPushButton("icur: оба")
+        b_icur.setToolTip("Применить оба тока одной командой (icur)")
+        b_icur.clicked.connect(
+            lambda: self._send(P.cmd_icur(self._irun.value(), self._ihold.value())))
+        b_cfg = QPushButton("Обновить (mcfg)")
+        b_cfg.setToolTip("Запросить текущую конфигурацию драйвера")
+        b_cfg.clicked.connect(lambda: self._send(P.cmd_mcfg()))
+        b_icur.setMinimumWidth(80)
+        b_cfg.setMinimumWidth(80)
+        row_act.addWidget(b_icur, 1)
+        row_act.addWidget(b_cfg, 1)
+        root.addLayout(row_act)
+
+        self._cfg = QLabel("mode=?  run=?  hold=?  microsteps=?  ready=?")
+        self._cfg.setFont(mono_font(10))
+        self._cfg.setWordWrap(True)
+        self._cfg.setProperty("well", "true")
+        root.addWidget(self._cfg)
+
+        # Диаграмма антенны: пересчёт cp → угол антенны для PPI (только
+        # локально в GUI, в прошивку не отправляется). Формула:
+        # угол_антенны = sign · (cp · передаточное_число) + смещение_нуля
+        lbl_ant = QLabel("Диаграмма антенны")
+        lbl_ant.setProperty("dim", "true")
+        root.addWidget(lbl_ant)
+
+        grid_ant = QGridLayout()
+        grid_ant.setHorizontalSpacing(8)
+        grid_ant.setColumnStretch(1, 1)
+
+        cap_scale = QLabel("Передаточное число")
+        cap_scale.setProperty("dim", "true")
+        grid_ant.addWidget(cap_scale, 0, 0)
+        self._ant_scale = QDoubleSpinBox()
+        self._ant_scale.setRange(0.0001, 10000.0)
+        self._ant_scale.setDecimals(4)
+        self._ant_scale.setValue(float(self._s.value("scale", 1.0)))
+        self._ant_scale.setMinimumWidth(90)
+        grid_ant.addWidget(self._ant_scale, 0, 1)
+
+        cap_offset = QLabel("Смещение нуля, °")
+        cap_offset.setProperty("dim", "true")
+        grid_ant.addWidget(cap_offset, 1, 0)
+        self._ant_offset = QDoubleSpinBox()
+        self._ant_offset.setRange(-360.0, 360.0)
+        self._ant_offset.setDecimals(2)
+        self._ant_offset.setValue(float(self._s.value("offset", 0.0)))
+        self._ant_offset.setMinimumWidth(90)
+        grid_ant.addWidget(self._ant_offset, 1, 1)
+
+        cap_sign = QLabel("Направление")
+        cap_sign.setProperty("dim", "true")
+        grid_ant.addWidget(cap_sign, 2, 0)
+        self._ant_sign = QComboBox()
+        self._ant_sign.addItem("+1 (по часовой)", 1)
+        self._ant_sign.addItem("-1 (против)", -1)
+        idx = self._ant_sign.findData(int(self._s.value("sign", 1)))
+        self._ant_sign.setCurrentIndex(max(0, idx))
+        self._ant_sign.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._ant_sign.setMinimumContentsLength(12)
+        self._ant_sign.setMinimumWidth(90)
+        grid_ant.addWidget(self._ant_sign, 2, 1)
+
+        root.addLayout(grid_ant)
+
+        self._ant_scale.valueChanged.connect(self._emit_antenna)
+        self._ant_offset.valueChanged.connect(self._emit_antenna)
+        self._ant_sign.currentIndexChanged.connect(self._emit_antenna)
 
         self._jog_restored = False
 
@@ -155,19 +303,68 @@ class MotorPanel(QGroupBox):
             self._echo_tp.setText("—")
             self._echo_tp.setStyleSheet("")
 
+        self._pe_val.setText("—" if st.pe is None else f"{st.pe:.2f}°")
+
+        if st.drp is not None:
+            self._drp.setText(f"{METRICS['drp'].short} {st.drp}")
+        else:
+            self._drp.setText(f"{METRICS['drp'].short} —")
+        if st.ec is not None:
+            ec = st.ec
+            set_chip(self._ec, "ok" if ec == 0 else "err",
+                     f"{METRICS['ec'].short} {ec} · {P.EC_LEGEND.get(ec, '?')}")
+        else:
+            set_chip(self._ec, "off", f"{METRICS['ec'].short} —")
+
     def reset(self) -> None:
         self._row_v.reset()
         self._row_a.reset()
         self._echo_tp.setText("—")
         self._echo_tp.setStyleSheet("")
+        self._pe_val.setText("—")
+        self._drp.setText(f"{METRICS['drp'].short} —")
+        set_chip(self._ec, "off", f"{METRICS['ec'].short} —")
+        self._cfg.setText("mode=?  run=?  hold=?  microsteps=?  ready=?")
 
     def _go(self) -> None:
         self._send(P.cmd_target(self._target.value()))
+
+    @staticmethod
+    def _cur_spin(val) -> QSpinBox:
+        sp = QSpinBox()
+        sp.setRange(P.CURRENT_MIN, P.CURRENT_MAX)
+        sp.setValue(val)
+        return sp
+
+    def update_mcfg(self, d: dict) -> None:
+        self._cfg.setText(
+            f"mode={d.get('mode', '?')}  run={d.get('run', '?')}  "
+            f"hold={d.get('hold', '?')}  microsteps={d.get('microsteps', '?')}  "
+            f"ready={d.get('ready', '?')}")
+
+    def antenna_values(self) -> tuple[float, float, int]:
+        return (self._ant_scale.value(), self._ant_offset.value(),
+                int(self._ant_sign.currentData()))
+
+    def _emit_antenna(self) -> None:
+        scale, offset, sign = self.antenna_values()
+        self._s.setValue("scale", scale)
+        self._s.setValue("offset", offset)
+        self._s.setValue("sign", sign)
+        self.antenna_config_changed.emit(scale, offset, sign)
 
     def set_enabled_controls(self, on: bool) -> None:
         for w in self.findChildren(QPushButton):
             w.setEnabled(on)
         for w in self.findChildren(QDoubleSpinBox):
             w.setEnabled(on)
+        for w in self.findChildren(QSpinBox):     # токи драйвера (irun/ihold)
+            w.setEnabled(on)
         for w in self.findChildren(QRadioButton):
             w.setEnabled(on)
+        self._mstep.setEnabled(on)                # микрошаг драйвера
+        # Калибровка антенны — чисто локальная настройка GUI, в прошивку не
+        # уходит, поэтому остаётся доступной независимо от подключения.
+        self._ant_scale.setEnabled(True)
+        self._ant_offset.setEnabled(True)
+        self._ant_sign.setEnabled(True)

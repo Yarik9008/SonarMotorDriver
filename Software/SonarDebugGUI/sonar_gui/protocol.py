@@ -41,7 +41,7 @@ ENCODER_COUNTS_REV = 131072  # 2^17
 DEG_PER_STEP = 360.0 / MOTOR_STEPS_PER_REV
 COUNTS_PER_DEG = ENCODER_COUNTS_REV / 360.0
 
-# ── Легенда кода ошибки энкодера ec (board.h ErrCode / biss_c.h) ────────────
+# ── Легенда кода ошибки ec (board.h ErrCode / biss_c.h) ─────────────────────
 EC_LEGEND = {
     0: "OK",
     1: "BiSS CRC",
@@ -50,6 +50,7 @@ EC_LEGEND = {
     4: "предупреждение",
     5: "SPI/HAL",
     6: "выброс (фильтр)",
+    7: "блокировка вала",
 }
 
 
@@ -66,7 +67,7 @@ class Defaults:
     microsteps: int = 256
     target_deg: float = 0.0
     vmax: float = 1200.0     # предел скорости, °/с (SPEED_DEFAULT_DEG_S)
-    accel: float = 0.0       # предел ускорения, °/с² (0 = выкл, ACCEL_DEFAULT_DEG_S2)
+    accel: float = 2000.0    # предел ускорения, °/с² (0 = выкл; ACCEL_DEFAULT_DEG_S2)
 
 
 DEFAULTS = Defaults()

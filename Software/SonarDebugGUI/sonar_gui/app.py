@@ -24,7 +24,7 @@ def _make_window_icon() -> QIcon:
     p.setRenderHint(QPainter.Antialiasing, True)
 
     cx = cy = 32.0
-    accent = QColor("#37d6ff")
+    accent = QColor("#5aa6c2")
 
     # Тёмный диск с радиальным градиентом и ободом
     grad = QRadialGradient(QPointF(cx, cy), 30.0)

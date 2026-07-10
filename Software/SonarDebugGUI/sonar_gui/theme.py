@@ -4,8 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import QLabel
 
 # ── Палитра ────────────────────────────────────────────────────────────────
+# Сдержанная тёмная тема: приглушённые сигнальные цвета вместо ярких
+# «неоновых» тонов — акценты остаются читаемыми, но не бросаются в глаза.
 COLORS = {
     "bg":         "#0a0d13",
     "surface":    "#10141c",
@@ -13,27 +16,27 @@ COLORS = {
     "well":       "#0b0f16",
     "border":     "#1f2735",
     "border2":    "#33405a",
-    "text":       "#e8ecf4",
-    "text_dim":   "#93a0b4",
+    "text":       "#e4e7ee",
+    "text_dim":   "#8f9aad",
     "text_faint": "#5c6880",
-    "accent":     "#37d6ff",
-    "accent_dim": "#0a5d7a",
-    "accent2":    "#35e0c8",
-    "amber":      "#ffb454",
-    "danger":     "#ff5d5d",
-    "green":      "#3ddc84",
-    "magenta":    "#e879f9",
+    "accent":     "#5aa6c2",
+    "accent_dim": "#2a5568",
+    "accent2":    "#57a397",
+    "amber":      "#c99a5b",
+    "danger":     "#c66a64",
+    "green":      "#5faa82",
+    "magenta":    "#a58bbd",
     "grid":       "#1a2230",
-    "warn":       "#ffb454",
-    "cp": "#37d6ff",
-    "tp": "#ffb454",
-    "pe": "#e879f9",
-    "u":  "#9d8cff",
+    "warn":       "#c99a5b",
+    "cp": "#5aa6c2",
+    "tp": "#c99a5b",
+    "pe": "#a58bbd",
+    "u":  "#8288b0",
     "ppi_center": "#0c2530",
     "ppi_edge":   "#070b10",
-    "ppi_grid":   "#164252",
-    "ppi_label":  "#5fb8d4",
-    "mismatch":   "#ffb454",
+    "ppi_grid":   "#1c3944",
+    "ppi_label":  "#6f97a8",
+    "mismatch":   "#c99a5b",
 }
 
 # ── Типографика (3 размера) ────────────────────────────────────────────────
@@ -78,6 +81,16 @@ def ui_font(px: int = FONT_SIZE_MD, *, bold: bool = False) -> QFont:
 
 def metric_color(key: str) -> str:
     return COLORS.get(key, COLORS["text_dim"])
+
+
+def set_chip(label: QLabel, state: str, text: str | None = None) -> None:
+    """Обновить текст/состояние QLabel с property chip=off/ok/warn/err (см. dark.qss)."""
+    if text is not None:
+        label.setText(text)
+    label.setProperty("chip", state)
+    st = label.style()
+    st.unpolish(label)
+    st.polish(label)
 
 
 def apply(app) -> None:
