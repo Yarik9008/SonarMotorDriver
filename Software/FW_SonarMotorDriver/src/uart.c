@@ -26,6 +26,8 @@ typedef struct {
     uint8_t              tx_ring[UART_TX_RING_SIZE];
     volatile uint16_t    tx_head;
     volatile uint16_t    tx_tail;
+    volatile uint16_t    tx_inflight;  /* байтов, отданных в текущую передачу (tail
+                                          двигается только по её завершению) */
     volatile uint8_t     tx_busy;
     volatile uint8_t     ready;
     volatile uint8_t     msp_error;
@@ -98,6 +100,7 @@ static void uart_port_reset(UartPortCtx *p)
     p->dma_rx_prev = 0;
     p->tx_head = 0;
     p->tx_tail = 0;
+    p->tx_inflight = 0;
     p->tx_busy = 0;
     p->ready = 0;
     p->msp_error = 0;
@@ -288,18 +291,18 @@ static void uart_port_task(UartPortCtx *p)
     uint16_t chunk = (p->tx_tail + cnt > UART_TX_RING_SIZE)
                      ? (UART_TX_RING_SIZE - p->tx_tail) : cnt;
 
+    /* tx_tail продвигаем не сейчас, а в TxCpltCallback: пока передача «в полёте»,
+     * этот участок кольца обязан считаться занятым, иначе producer перезапишет
+     * ещё не ушедшие байты при заполнении кольца. */
     p->tx_busy = 1;
-    uint16_t old_tail = p->tx_tail;
-    p->tx_tail = (p->tx_tail + chunk) % UART_TX_RING_SIZE;
+    p->tx_inflight = chunk;
 
-    HAL_StatusTypeDef st;
-    if (p->use_dma)
-        st = HAL_UART_Transmit_DMA(&p->huart, &p->tx_ring[old_tail], chunk);
-    else
-        st = HAL_UART_Transmit_IT(&p->huart, &p->tx_ring[old_tail], chunk);
+    HAL_StatusTypeDef st = p->use_dma
+        ? HAL_UART_Transmit_DMA(&p->huart, &p->tx_ring[p->tx_tail], chunk)
+        : HAL_UART_Transmit_IT (&p->huart, &p->tx_ring[p->tx_tail], chunk);
 
     if (st != HAL_OK) {
-        p->tx_tail = old_tail;
+        p->tx_inflight = 0;
         p->tx_busy = 0;
     }
 }
@@ -395,8 +398,14 @@ void DMA1_Channel3_IRQHandler(void)
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
 {
     UartPortCtx *p = uart_ctx_from_handle(h);
-    if (p)
-        p->tx_busy = 0;
+    if (!p)
+        return;
+    /* Порядок важен: сначала освобождаем участок (tail), только потом снимаем
+     * busy — иначе uart_port_task() мог бы стартовать новую передачу с ещё не
+     * продвинутого tail. */
+    p->tx_tail = (uint16_t)((p->tx_tail + p->tx_inflight) % UART_TX_RING_SIZE);
+    p->tx_inflight = 0;
+    p->tx_busy = 0;
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *h)
