@@ -425,7 +425,21 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *h)
         return;
 
     __HAL_UART_CLEAR_PEFLAG(h);
-    uart_port_rx_start(p);
+
+    /* RX перезапускаем только если HAL действительно прервал приём
+     * (блокирующие ошибки: ORE/DMA). При FE/NE circular DMA продолжает
+     * работать — сброс dma_rx_prev привёл бы к повторному вливу старых
+     * байтов из начала DMA-буфера в кольцо команд. */
+    if (h->RxState == HAL_UART_STATE_READY)
+        uart_port_rx_start(p);
+
+    /* TX: HAL сбросил передачу в READY при активном tx_busy — разблокировать,
+     * иначе tx_busy завис бы в 1 и порт замолчал навсегда. tx_tail не
+     * продвинут (см. П5), незавершённый chunk уйдёт заново. */
+    if (h->gState == HAL_UART_STATE_READY && p->tx_busy) {
+        p->tx_inflight = 0;
+        p->tx_busy = 0;
+    }
 }
 
 uint8_t UART_Transmit(const uint8_t *buf, uint16_t len)
