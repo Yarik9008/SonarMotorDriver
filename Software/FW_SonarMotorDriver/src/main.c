@@ -53,6 +53,10 @@ static void Scan_Tick(void);
 #define MAX_DEG_PER_TICK ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ)
 #define DT_S             (1.0f / (float)POLL_FREQ_HZ)
 #define COUNTS_TO_DEG(c) ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV)
+/* Double-версия: для абсолютной позиции (g_enc_counts до ~3.6e9 отсчётов
+ * теряет во float до ~0.7°) и накопителей цели — сужаем во float только
+ * малые разности (ошибку контура). */
+#define COUNTS_TO_DEG_D(c) ((double)(c) * 360.0 / (double)ENCODER_COUNTS_REV)
 
 /* Тиков опроса до принудительного прерывания зависшего DMA-чтения BiSS */
 #define BISS_DMA_TIMEOUT_TICKS \
@@ -346,7 +350,7 @@ static PID_State g_pid = {
     .initialized = 0
 };
 
-static float    g_target_deg     = 0;           ///< Целевая позиция (градусы)
+static double   g_target_deg     = 0;           ///< Целевая позиция (градусы), double — накопитель
 static uint8_t  g_enabled        = 1;           ///< Флаг разрешения работы (движение разрешено)
 static uint16_t g_output_period  = OUTPUT_PERIOD_MS_DEFAULT; ///< Период телеметрии
 static uint8_t  g_telem_debug    = TELEMETRY_DEBUG_DEFAULT;  ///< Флаг расширенной телеметрии
@@ -363,7 +367,7 @@ static uint32_t g_enc_fail_cnt   = 0;           ///< Счетчик пропус
 static uint8_t  g_enc_outlier    = 0;           ///< Последнее чтение отброшено фильтром выбросов
 static uint32_t g_outlier_cnt    = 0;           ///< Всего отфильтровано выбросов (телеметрия of)
 static uint32_t g_sample_t       = 0;           ///< DWT-момент сэмпла обрабатываемого чтения (фильтр выбросов)
-static float    g_ol_pos         = 0;           ///< Виртуальная позиция для Open-Loop
+static double   g_ol_pos         = 0;           ///< Виртуальная позиция для Open-Loop (double — накопитель)
 static uint8_t  g_was_outside_db = 0;           ///< Флаг выхода из мертвой зоны (для логики доводки)
 static uint8_t  g_homing         = 0;           ///< Флаг процесса выхода в "дом" после инициализации
 
@@ -418,7 +422,7 @@ typedef enum {
 } ScanState;
 
 static ScanState g_scan_st       = SCAN_IDLE;
-static float     g_scan_cur      = 0;           ///< Текущая целевая точка сканирования
+static double    g_scan_cur      = 0;           ///< Текущая целевая точка сканирования (double — накопитель)
 static float     g_scan_start    = 0;           ///< Начало сектора
 static float     g_scan_end      = 0;           ///< Конец сектора
 static float     g_scan_step     = 0;           ///< Шаг сканирования
@@ -627,12 +631,12 @@ static void Encoder_Accumulate(const BiSS_Reading *rd)
     if (g_enc_raw_prev == 0xFFFFFFFF) {
         g_enc_counts   = (int64_t)rd->position;
         g_enc_raw_prev = rd->position;
-        float pos = COUNTS_TO_DEG(g_enc_counts);
+        double pos = COUNTS_TO_DEG_D(g_enc_counts);
         g_ol_pos = pos;
         if (g_enc_diag.passed) {
             /* Автоматический выход в «дом» разрешён только после успешной
              * стартовой диагностики энкодера. */
-            g_target_deg = pos + shortest_path_err(STARTUP_TARGET_OFFSET_DEG, pos);
+            g_target_deg = pos + shortest_path_err(STARTUP_TARGET_OFFSET_DEG, (float)pos);
             g_homing     = 1;
         } else {
             /* Энкодер восстановился после провала диагностики: привязываемся
@@ -749,7 +753,7 @@ static void Mode_Update(uint8_t enc_ok)
         g_enc_fail_cnt++;
         if (g_mode == MODE_CL && g_enc_fail_cnt >= (ENCODER_FAIL_MS / POLL_INTERVAL_MS)) {
             g_mode = MODE_OL;
-            g_ol_pos = COUNTS_TO_DEG(g_enc_counts);
+            g_ol_pos = COUNTS_TO_DEG_D(g_enc_counts);
         }
     }
 }
@@ -790,8 +794,8 @@ static void MotorControl_Tick(uint8_t enc_ok)
     }
 
     if (g_mode == MODE_CL && enc_ok) {
-        float pos = COUNTS_TO_DEG(g_enc_counts);
-        float err = g_target_deg - pos;
+        /* Вычитание в double, результат (малая ошибка) — во float */
+        float err = (float)(g_target_deg - COUNTS_TO_DEG_D(g_enc_counts));
 
         if (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) {
             g_was_outside_db = 1;
@@ -846,7 +850,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
         }
 
     } else if (g_mode == MODE_OL) {
-        float err = g_target_deg - g_ol_pos;
+        float err = (float)(g_target_deg - g_ol_pos);
 
         if (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) {
             float v = Motion_Limit(err, err, 1);
@@ -979,7 +983,7 @@ static void Stall_Tick(uint8_t enc_ok)
     tmc2209_motor_stop();
     tmc2209_motor_set_enabled(0);
     Control_Reset();
-    g_target_deg = COUNTS_TO_DEG(g_enc_counts);
+    g_target_deg = COUNTS_TO_DEG_D(g_enc_counts);
     HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
 
     snprintf(s_stall_msg, sizeof(s_stall_msg),
@@ -1019,7 +1023,7 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
     char buf[160];
     /* Позиция по режиму: в CL — последняя валидная позиция энкодера (не
      * дёргается при единичном пропуске чтения), в OL — виртуальный счётчик. */
-    float deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
+    double deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
     uint8_t ec = enc_ok ? ERR_OK
                         : (g_enc_outlier ? (uint8_t)ERR_ENC_OUTLIER : (uint8_t)st);
     int len;
@@ -1059,16 +1063,17 @@ static void Scan_Tick(void)
     if (g_scan_delay_ms == 0) return; /* не должно быть при валидной команде */
     if (++g_scan_delay_cnt < g_scan_delay_ms) return;
 
-    float next;
+    double next;
     if (g_scan_inf != 0) {
-        next = g_scan_cur + (float)g_scan_inf * g_scan_step;
-        if (next > 1e7f || next < -1e7f) {
-            float off = g_scan_cur;
+        next = g_scan_cur + (double)g_scan_inf * g_scan_step;
+        if (next > 1e7 || next < -1e7) {
+            double off = g_scan_cur;
             g_scan_cur   -= off;
             next         -= off;
             g_ol_pos     -= off;
             g_target_deg -= off;
-            g_enc_counts -= (int64_t)(off / 360.0f * (float)ENCODER_COUNTS_REV);
+            g_enc_counts -= (int64_t)(off * (double)ENCODER_COUNTS_REV / 360.0
+                                      + (off >= 0 ? 0.5 : -0.5));
         }
     } else {
         next = g_scan_cur + (float)g_scan_dir * g_scan_step;
@@ -1121,7 +1126,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_cont_dir = 0;
         tmc2209_motor_set_enabled(1);
         Control_Reset();
-        g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
+        g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
         g_homing     = 0;
         SendResponse("ok:en\r\n");
         break;
@@ -1221,7 +1226,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_inf = 0;
         g_scan_st  = SCAN_IDLE;
         tmc2209_motor_stop();
-        g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG(g_enc_counts) : g_ol_pos;
+        g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
         Control_Reset();
         g_homing   = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
