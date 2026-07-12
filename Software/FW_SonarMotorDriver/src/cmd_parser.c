@@ -60,6 +60,7 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
     out->irun_ma = 0;
     out->ihold_ma = 0;
     out->microsteps = 0;
+    out->sync_mode = 0;
 
     if (strcmp(line, "en") == 0) {
         out->type = CMD_ENABLE;
@@ -192,6 +193,25 @@ uint8_t Cmd_Parse(const char *line, Cmd_Result *out)
         out->scan_step = st;
         out->scan_delay_ms = (uint16_t)d;
         out->scan_infinite_dir = inf_dir;
+        return 1;
+    }
+
+    /* sync=N — источник перехода к следующей точке скана:
+     * 0 = таймер delay (штатно), 1 = фронт SYNC_IN, 2 = фронт SYNC_IN
+     * либо delay как тайм-аут (что наступит раньше) */
+    if (strncmp(line, "sync=", 5) == 0) {
+        const char *p = line + 5;
+        int32_t v;
+        if (parse_int(&p, &v) != 0 || v < 0 || v > 2)
+            return 0;
+        out->type = CMD_SET_SYNC;
+        out->sync_mode = (uint8_t)v;
+        return 1;
+    }
+
+    /* sync — запрос состояния синхронизации */
+    if (strcmp(line, "sync") == 0) {
+        out->type = CMD_GET_SYNC;
         return 1;
     }
 

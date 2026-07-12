@@ -14,6 +14,11 @@
  * - Обработку команд пользователя через UART.
  * - Периодический вывод телеметрии.
  * - Логику автоматического сканирования секторов.
+ * - Синхронизацию с внешним оборудованием: SYNC_OUT (LOW — движение к точке,
+ *   HIGH — точка достигнута) и внешний триггер SYNC_IN — команда sync=N
+ *   выбирает источник перехода к следующей точке скана (0 — таймер delay,
+ *   1 — фронт SYNC_IN, 2 — фронт либо delay как тайм-аут), команда sync
+ *   выводит состояние (режим, уровни пинов, счётчик фронтов).
  */
 
 #include "stm32f1xx_hal.h"
@@ -46,6 +51,7 @@ static void Stall_Tick(uint8_t enc_ok);
 static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st);
 static void Heartbeat_Tick(void);
 static void Scan_Tick(void);
+static void SyncIn_Tick(void);
 
 /* --- Константы --- */
 
@@ -464,6 +470,20 @@ static uint16_t  g_scan_delay_cnt= 0;           ///< Счетчик времен
 static int8_t    g_scan_dir      = 1;           ///< Текущее направление (1/-1) для зигзага
 static int8_t    g_scan_inf      = 0;           ///< Флаг бесконечного сканирования (направление)
 
+/**
+ * @brief Источник перехода к следующей точке скана (команда sync=N).
+ */
+typedef enum {
+    SYNC_ADV_TIMER = 0,     ///< Таймер delay из scan= (по умолчанию)
+    SYNC_ADV_EXT,           ///< Фронт LOW→HIGH на SYNC_IN (delay игнорируется)
+    SYNC_ADV_EXT_TIMEOUT    ///< Фронт SYNC_IN либо delay как тайм-аут
+} SyncAdvMode;
+
+static uint8_t  g_sync_mode    = SYNC_ADV_TIMER; ///< Текущий режим (sync=)
+static uint8_t  g_syncin_prev  = 0;   ///< Уровень SYNC_IN на прошлом тике
+static uint8_t  g_syncin_trig  = 0;   ///< Одноразовый флаг «фронт после достижения точки»
+static uint32_t g_syncin_edges = 0;   ///< Счётчик фронтов SYNC_IN с момента старта
+
 static void ApplyVelocity(float v_deg_per_tick)
 {
     if (v_deg_per_tick == 0.0f) {
@@ -638,6 +658,7 @@ int main(void)
         }
 
         Mode_Update(enc_ok);
+        SyncIn_Tick();
         MotorControl_Tick(enc_ok);
         Stall_Tick(enc_ok);
         Scan_Tick();
@@ -863,6 +884,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_cur       = g_target_deg;
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
+                g_syncin_trig    = 0; /* фронты SYNC_IN до выхода SYNC_OUT в HIGH не считаются */
             }
             if (!final_move)
                 tmc2209_motor_stop();
@@ -903,6 +925,7 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 g_scan_cur       = g_target_deg;
                 g_scan_st        = SCAN_DELAY;
                 g_scan_delay_cnt = 0;
+                g_syncin_trig    = 0; /* фронты SYNC_IN до выхода SYNC_OUT в HIGH не считаются */
             }
             tmc2209_motor_stop();
         }
@@ -1101,12 +1124,40 @@ static void Heartbeat_Tick(void)
 
 /* --- Сканирование --- */
 
+/**
+ * @brief Детектор фронта LOW→HIGH на SYNC_IN (опрос 1 кГц, импульс >= 1 мс).
+ *
+ * Каждый фронт увеличивает счётчик g_syncin_edges (диагностика, команда sync)
+ * и взводит g_syncin_trig — триггер перехода к следующей точке скана в
+ * режимах sync=1/2. Перед следующим фронтом линия должна вернуться в LOW.
+ */
+static void SyncIn_Tick(void)
+{
+    uint8_t lvl = (HAL_GPIO_ReadPin(SYNC_IN_PORT, SYNC_IN_PIN) == GPIO_PIN_SET);
+    if (lvl && !g_syncin_prev) {
+        g_syncin_edges++;
+        g_syncin_trig = 1;
+    }
+    g_syncin_prev = lvl;
+}
+
 static void Scan_Tick(void)
 {
     if (g_scan_st != SCAN_DELAY) return;
-    /* Задержка в мс: тик 1 кГц, считаем до g_scan_delay_ms включительно */
-    if (g_scan_delay_ms == 0) return; /* не должно быть при валидной команде */
-    if (++g_scan_delay_cnt < g_scan_delay_ms) return;
+
+    /* Переход к следующей точке: по таймеру delay (тик 1 кГц, считаем до
+     * g_scan_delay_ms включительно) и/или фронту SYNC_IN — режим sync= */
+    uint8_t timer_ok = (g_scan_delay_ms != 0 &&
+                        ++g_scan_delay_cnt >= g_scan_delay_ms);
+    uint8_t go = 0;
+    switch (g_sync_mode) {
+    case SYNC_ADV_TIMER:       go = timer_ok;                  break;
+    case SYNC_ADV_EXT:         go = g_syncin_trig;             break;
+    case SYNC_ADV_EXT_TIMEOUT: go = g_syncin_trig || timer_ok; break;
+    default:                   break;
+    }
+    if (!go) return;
+    g_syncin_trig = 0;
 
     double next;
     if (g_scan_inf != 0) {
@@ -1253,6 +1304,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_inf       = inf;
         g_homing         = 0;
         PID_Reset(&g_pid);
+        g_syncin_trig    = 0;  /* фронт, пришедший до старта скана, не считается */
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         if (inf)
             SendResponse("ok:scan=%.2f,%c,%.2f,%u\r\n",
@@ -1271,6 +1323,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
         Control_Reset();
         g_homing   = 0;
+        g_syncin_trig = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         SendResponse("ok:stop\r\n");
         break;
@@ -1365,6 +1418,19 @@ static void ProcessCommand(const Cmd_Result *cmd)
         EncDiag_Begin(&g_rediag);
         SendResponse("ok:diag\r\n");
         /* Результат придёт отдельной строкой enc:ok / err:enc через ~16 мс */
+        break;
+
+    case CMD_SET_SYNC:
+        g_sync_mode = cmd->sync_mode;   /* 0..2 гарантирует парсер */
+        SendResponse("ok:sync=%u\r\n", (unsigned)g_sync_mode);
+        break;
+
+    case CMD_GET_SYNC:
+        SendResponse("sync=%u in=%u out=%u n=%lu\r\n",
+            (unsigned)g_sync_mode,
+            (unsigned)(HAL_GPIO_ReadPin(SYNC_IN_PORT, SYNC_IN_PIN) == GPIO_PIN_SET),
+            (unsigned)(HAL_GPIO_ReadPin(SYNC_OUT_PORT, SYNC_OUT_PIN) == GPIO_PIN_SET),
+            (unsigned long)g_syncin_edges);
         break;
 
     case CMD_UNKNOWN:

@@ -17,6 +17,16 @@
  * ответами. При старте, как и основная прошивка, отправляет строку диагностики
  * энкодера (у имитатора — всегда успешную): enc:ok n=16/16 spread=0.000 pos=<...>.
  * Команда diag отвечает ok:diag и той же строкой enc:ok.
+ *
+ * Синхронизация (полноценный функционал, одинаковый с основной прошивкой):
+ * - SYNC_OUT (PB9), как в основной: LOW — движение к точке скана,
+ *   HIGH — точка достигнута (по модели движения);
+ * - SYNC_IN (PB12) — внешний триггер: опрос 1 кГц, детектор фронта LOW→HIGH.
+ *   Команда sync=N выбирает источник перехода к следующей точке скана:
+ *   0 — таймер delay (штатно, по умолчанию), 1 — фронт SYNC_IN,
+ *   2 — фронт SYNC_IN либо delay как тайм-аут. Учитываются только фронты,
+ *   пришедшие после выхода SYNC_OUT в HIGH (точка достигнута).
+ *   Команда sync выводит состояние: sync=<N> in=<0|1> out=<0|1> n=<фронтов>.
  */
 
 #include "stm32f1xx_hal.h"
@@ -39,6 +49,7 @@ static void MotorControl_Tick(void);
 static void Telemetry_Tick(void);
 static void Heartbeat_Tick(void);
 static void Scan_Tick(void);
+static void SyncIn_Tick(void);
 
 /* --- Константы (те же формулы, что в основной прошивке) --- */
 
@@ -138,6 +149,20 @@ static uint16_t  g_scan_delay_cnt= 0;
 static int8_t    g_scan_dir      = 1;
 static int8_t    g_scan_inf      = 0;
 
+/**
+ * @brief Источник перехода к следующей точке скана (команда sync=N).
+ */
+typedef enum {
+    SYNC_ADV_TIMER = 0,     ///< Таймер delay из scan= (поведение основной прошивки)
+    SYNC_ADV_EXT,           ///< Фронт LOW→HIGH на SYNC_IN (delay игнорируется)
+    SYNC_ADV_EXT_TIMEOUT    ///< Фронт SYNC_IN либо delay как тайм-аут
+} SyncAdvMode;
+
+static uint8_t  g_sync_mode    = SYNC_ADV_TIMER; ///< Текущий режим (sync=)
+static uint8_t  g_syncin_prev  = 0;   ///< Уровень SYNC_IN на прошлом тике
+static uint8_t  g_syncin_trig  = 0;   ///< Одноразовый флаг «фронт после достижения точки»
+static uint32_t g_syncin_edges = 0;   ///< Счётчик фронтов SYNC_IN с момента старта
+
 /* «Мотор движется» для проверки busy в mstep/diag. В основной прошивке diag
  * занят при (g_cont_dir != 0 || g_scan_st != SCAN_IDLE || motor_is_moving()) —
  * скан считается движением даже в паузе между точками (вал в SCAN_DELAY). */
@@ -192,6 +217,7 @@ int main(void)
             continue;
         __HAL_TIM_CLEAR_FLAG(&htim_poll, TIM_FLAG_UPDATE);
 
+        SyncIn_Tick();
         MotorControl_Tick();
         Scan_Tick();
         Telemetry_Tick();
@@ -260,6 +286,7 @@ static void MotorControl_Tick(void)
             g_scan_cur       = g_target_deg;
             g_scan_st        = SCAN_DELAY;
             g_scan_delay_cnt = 0;
+            g_syncin_trig    = 0; /* фронты SYNC_IN до выхода SYNC_OUT в HIGH не считаются */
         }
         g_vel_cmd = 0;   /* цель достигнута — обнуляем скорость рампы (как Control_Reset) */
     }
@@ -316,13 +343,43 @@ static void Heartbeat_Tick(void)
     }
 }
 
+/* --- Синхронизация: опрос SYNC_IN (1 кГц) --- */
+
+/**
+ * @brief Детектор фронта LOW→HIGH на SYNC_IN (импульс должен быть >= 1 мс).
+ *
+ * Каждый фронт увеличивает счётчик g_syncin_edges (диагностика, команда sync)
+ * и взводит g_syncin_trig — триггер перехода к следующей точке скана в
+ * режимах sync=1/2. Перед следующим фронтом линия должна вернуться в LOW.
+ */
+static void SyncIn_Tick(void)
+{
+    uint8_t lvl = (HAL_GPIO_ReadPin(SYNC_IN_PORT, SYNC_IN_PIN) == GPIO_PIN_SET);
+    if (lvl && !g_syncin_prev) {
+        g_syncin_edges++;
+        g_syncin_trig = 1;
+    }
+    g_syncin_prev = lvl;
+}
+
 /* --- Сканирование (перенесено из основной прошивки) --- */
 
 static void Scan_Tick(void)
 {
     if (g_scan_st != SCAN_DELAY) return;
-    if (g_scan_delay_ms == 0) return; /* не должно быть при валидной команде */
-    if (++g_scan_delay_cnt < g_scan_delay_ms) return;
+
+    /* Переход к следующей точке: по таймеру delay и/или фронту SYNC_IN (sync=) */
+    uint8_t timer_ok = (g_scan_delay_ms != 0 &&
+                        ++g_scan_delay_cnt >= g_scan_delay_ms);
+    uint8_t go = 0;
+    switch (g_sync_mode) {
+    case SYNC_ADV_TIMER:       go = timer_ok;                  break;
+    case SYNC_ADV_EXT:         go = g_syncin_trig;             break;
+    case SYNC_ADV_EXT_TIMEOUT: go = g_syncin_trig || timer_ok; break;
+    default:                   break;
+    }
+    if (!go) return;
+    g_syncin_trig = 0;
 
     float next;
     if (g_scan_inf != 0) {
@@ -459,6 +516,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_delay_cnt = 0;
         g_scan_dir       = inf ? inf : 1;
         g_scan_inf       = inf;
+        g_syncin_trig    = 0;  /* фронт, пришедший до старта скана, не считается */
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         if (inf)
             SendResponse("ok:scan=%.2f,%c,%.2f,%u\r\n",
@@ -475,6 +533,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_st  = SCAN_IDLE;
         g_target_deg = g_sim_pos_deg;
         g_vel_cmd    = 0;
+        g_syncin_trig = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         SendResponse("ok:stop\r\n");
         break;
@@ -544,6 +603,19 @@ static void ProcessCommand(const Cmd_Result *cmd)
         }
         SendResponse("ok:diag\r\n");
         SendEncDiagOk();
+        break;
+
+    case CMD_SET_SYNC:
+        g_sync_mode = cmd->sync_mode;   /* 0..2 гарантирует парсер */
+        SendResponse("ok:sync=%u\r\n", (unsigned)g_sync_mode);
+        break;
+
+    case CMD_GET_SYNC:
+        SendResponse("sync=%u in=%u out=%u n=%lu\r\n",
+            (unsigned)g_sync_mode,
+            (unsigned)(HAL_GPIO_ReadPin(SYNC_IN_PORT, SYNC_IN_PIN) == GPIO_PIN_SET),
+            (unsigned)(HAL_GPIO_ReadPin(SYNC_OUT_PORT, SYNC_OUT_PIN) == GPIO_PIN_SET),
+            (unsigned long)g_syncin_edges);
         break;
 
     case CMD_UNKNOWN:
