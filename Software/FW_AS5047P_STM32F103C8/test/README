@@ -1,0 +1,19 @@
+
+This directory is intended for PlatformIO Test Runner and project tests.
+
+Unit Testing is a software testing method by which individual units of
+source code, sets of one or more MCU program modules together with associated
+control data, usage procedures, and operating procedures, are tested to
+determine whether they are fit for use. Unit testing finds problems early
+in the development cycle.
+
+More information about PlatformIO Unit Testing:
+- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+
+---
+
+Хостовая проверка следящего фильтра угла лежит НЕ здесь, а в tools/:
+`tools/run_filter_model.sh` собирает `src/angle_filter.c` обычным gcc и
+прогоняет модель датчика (README проекта, раздел «Проверка на модели»).
+Этот каталог отдан PlatformIO Test Runner: всё, что в нём лежит, собирается
+под целевой МК, и программа с собственным main() здесь сломала бы `pio test`.

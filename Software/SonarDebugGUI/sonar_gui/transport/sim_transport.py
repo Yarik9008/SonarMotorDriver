@@ -14,7 +14,6 @@ from .base import Transport
 from ..simulator import FirmwareSimulator
 
 _TICK_MS = 10                   # шаг модели
-_TELE_MIN_DEBUG_MS = 20         # минимальный период телеметрии при debug=1 (как в прошивке)
 
 
 class SimTransport(Transport):
@@ -22,7 +21,6 @@ class SimTransport(Transport):
         super().__init__()
         self.sim = FirmwareSimulator()
         self._open = False
-        self._tele_accum = 0.0
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
         self._timer.setInterval(_TICK_MS)
@@ -36,7 +34,6 @@ class SimTransport(Transport):
         if self._open:
             return
         self._open = True
-        self._tele_accum = 0.0
         self._outbox.clear()
         self._clock.start()
         self._timer.start()
@@ -57,9 +54,14 @@ class SimTransport(Transport):
     def write_line(self, line: str) -> None:
         if not self._open:
             return
+        # Терминатор дописываем так же, как SerialTransport.write_line: модель
+        # собирает строки из потока, как line_reader.c прошивки, и без CR+LF
+        # команда осталась бы лежать в её приёмнике (line_reader.c:39-46) —
+        # ровно как на плате, если бы хост забыл конец строки.
+        raw = line if line.endswith("\r\n") else line + "\r\n"
         # Ответы кладём в очередь и сливаем отложенно — чтобы не было
         # реентранси в обработчик сигнала во время самой отправки команды.
-        self._outbox.extend(self.sim.handle_command(line))
+        self._outbox.extend(self.sim.handle_command(raw))
         QTimer.singleShot(0, self._flush)
 
     def _flush(self) -> None:
@@ -73,16 +75,15 @@ class SimTransport(Transport):
             dt = _TICK_MS
         self.sim.tick(float(dt))
 
-        op = self.sim.op_ms
-        if op <= 0:
-            return
-        eff = max(op, _TELE_MIN_DEBUG_MS) if self.sim.debug else op
-        self._tele_accum += dt
-        if self._tele_accum >= eff:
-            self._tele_accum = 0.0
+        # Выдачу кадра целиком решает модель (Telemetry_Tick прошивки): режим
+        # источника om=, период op= с нижней границей при debug=1 и взведённый
+        # событийный кадр по приходу в цель. Свой счётчик здесь означал бы, что
+        # симулятор в GUI не знает про om= и никогда не выдаёт ev:1.
+        line = self.sim.telemetry_tick(float(dt))
+        if line is not None:
             # Телеметрию — в тот же outbox и сразу сливаем: тик не реентрантен,
             # а FIFO гарантирует, что ранее поставленные ответы уйдут первыми.
-            self._outbox.append(self.sim.telemetry_line())
+            self._outbox.append(line)
             self._flush()
 
     @property

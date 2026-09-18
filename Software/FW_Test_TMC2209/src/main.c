@@ -42,6 +42,7 @@ static char rsp[RSP_BUF_SIZE];
 /* ---- Опережающие объявления ---- */
 
 static void SystemClock_Config(void);
+static void dwt_init(void);
 static void gpio_hw_init(void);
 static void uart_hw_init(void);
 static void step_tim_init(void);
@@ -416,22 +417,21 @@ static void process_cmd(void)
     }
 }
 
-/* ==== HAL UART MspInit: настройка GPIO под оба UART на плате ==== */
+/* ==== HAL UART MspInit: настройка GPIO под оба UART на плате ====
+ *
+ * HAL_UART_MspInit — единственный обработчик на всю прошивку, поэтому он
+ * остаётся здесь и сам раздаёт порты: линию TMC2209 настраивает порт
+ * библиотеки (tmc2209_port_stm32_hal_uart_msp_init сам проверяет Instance и
+ * молча выходит на чужом хэндле), CLI — локальный код ниже. Дублировать
+ * настройку USART2 в прошивке больше не нужно: пины берутся из тех же
+ * TMC2209_UART_* в board.h.
+ */
 
 void HAL_UART_MspInit(UART_HandleTypeDef *h)
 {
     GPIO_InitTypeDef gpio = {0};
     if (h->Instance == TMC2209_UART) {
-        __HAL_RCC_USART2_CLK_ENABLE();
-        __HAL_RCC_GPIOA_CLK_ENABLE();
-        gpio.Pin   = TMC2209_UART_TX_PIN;
-        gpio.Mode  = GPIO_MODE_AF_PP;
-        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(TMC2209_UART_TX_PORT, &gpio);
-        gpio.Pin   = TMC2209_UART_RX_PIN;
-        gpio.Mode  = GPIO_MODE_INPUT;
-        gpio.Pull  = GPIO_PULLUP;
-        HAL_GPIO_Init(TMC2209_UART_RX_PORT, &gpio);
+        tmc2209_port_stm32_hal_uart_msp_init(h);
     }
     else if (h->Instance == CLI_UART) {
         __HAL_RCC_USART1_CLK_ENABLE();
@@ -497,7 +497,7 @@ static void app_init_driver(void)
     cfg.irun_ma        = TMC2209_IRUN_MA;
     cfg.ihold_ma       = TMC2209_IHOLD_MA;
     cfg.microsteps     = TMC2209_MICROSTEPS;
-    cfg.reply_delay_us = TMC_REPLY_DELAY_US;
+    cfg.reply_delay_us = TMC2209_REPLY_DELAY_US;
 
     tmc2209_io_t io;
     tmc2209_port_stm32_hal_fill_io(&io, &s_hal_ctx);
@@ -513,6 +513,22 @@ static void app_init_driver(void)
         snprintf(rsp, sizeof(rsp), "init FAIL: %s\r\n", tmc2209_result_str(res));
         tx(rsp);
     }
+}
+
+/* ==== Счётчик тактов DWT ====
+ *
+ * Порт библиотеки делает микросекундные паузы через DWT->CYCCNT и сам его не
+ * включает (tmc2209_port_stm32_dwt_init из старой копии библиотеки убрана —
+ * инициализация отладочного блока ядра принадлежит прошивке, а не драйверу).
+ * Включаем счётчик до первого обращения к TMC2209, иначе delay_us вернётся
+ * мгновенно и таймингов протокола не будет.
+ */
+
+static void dwt_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 /* ==== Настройка тактирования (HSI, внешний кварц не используется) ==== */
@@ -549,7 +565,7 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
 
-    tmc2209_port_stm32_dwt_init();
+    dwt_init();
     gpio_hw_init();
     uart_hw_init();
     step_tim_init();
@@ -558,8 +574,19 @@ int main(void)
     s_hal_ctx.en_port     = ENABLE_PORT;
     s_hal_ctx.en_pin      = ENABLE_PIN;
     s_hal_ctx.sysclk_hz   = SYSCLK_HZ;
-    s_hal_ctx.half_duplex = 0;
+    s_hal_ctx.half_duplex = TMC2209_HALF_DUPLEX;
     s_hal_ctx.debug_fn    = debug_to_cli;
+
+    /* Бэкенд STEP/DIR библиотеки на стенде не используется: импульсы формирует
+     * сама прошивка (step_tim_init/step_pwm_start), поэтому колбэки motor_*
+     * никто не вызывает и эти поля не разыменовываются. Обнуляем явно, чтобы
+     * NULL был осознанным значением, а не остатком статической инициализации. */
+    s_hal_ctx.htim_step   = NULL;
+    s_hal_ctx.tim_channel = 0;
+    s_hal_ctx.step_port   = NULL;
+    s_hal_ctx.step_pin    = 0;
+    s_hal_ctx.dir_port    = NULL;
+    s_hal_ctx.dir_pin     = 0;
 
     tx("Test_TMC2209 F103 Start\r\n");
 

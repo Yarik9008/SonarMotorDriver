@@ -39,11 +39,19 @@
 /* -------- Параметры двигателя и драйвера TMC2209 -------- */
 /* Внимание: линию питания драйвера VS необходимо ВСЕГДА подключать через дополнительный электролитический конденсатор! */
 #define TMC2209_UART_ADDR       0U
-#define TMC_REPLY_DELAY_US      500U
+#define TMC2209_REPLY_DELAY_US  500U
 #define TMC2209_RSENSE_OHM      0.11f
 #define TMC2209_IRUN_MA         800U
 #define TMC2209_IHOLD_MA        400U
 #define TMC2209_MICROSTEPS      16U
+#define TMC2209_HALF_DUPLEX     0U      /* PA2/PA3 разведены раздельно: full-duplex */
+
+/* Фасад мотора библиотеки (tmc2209_motor_*) стенду не нужен: импульсы STEP он
+ * формирует сам (step_tim_init/step_pwm_start в main.c), а VACTUAL задаёт
+ * командами CLI напрямую. Флага -DTMC2209_USE_MOTOR_FACADE в platformio.ini
+ * нет, поэтому tmc2209_motor.c не компилируется — и описывать здесь его
+ * параметры (режим движения, SENDDELAY, TPOWERDOWN, SPREADCYCLE, инверсию
+ * направления) не требуется. */
 
 /* -------- GPIO — выводы TMC2209: STEP, DIR, ENN -------- */
 #define STEP_PORT               GPIOB

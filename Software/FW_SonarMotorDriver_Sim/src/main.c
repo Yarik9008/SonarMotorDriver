@@ -12,9 +12,18 @@
  * MotorControl_Tick основной прошивки (g_ol_pos += v — без квантования в шаги).
  * Телеметрия всегда показывает штатную работу: ec:0, m:cl.
  *
+ * Загрузочная последовательность повторена полностью: сразу после подъёма
+ * UART имитатор шлёт тот же баннер boot:rst=<флаги> fw=<версия>, что и
+ * основная прошивка (флаги сброса читаются из RCC->CSR так же), а следом —
+ * строку диагностики энкодера. Версия задана в platformio.ini
+ * (-DFW_VERSION="1.0.0-sim"): формат строки совпадает байт в байт, различает
+ * имитатор и боевую прошивку только суффикс -sim.
+ *
  * Поддерживаются все команды основной прошивки: en, dis, t=, t=+/-, kp/ki/kd=,
- * op=, debug=, scan=, stop, irun, ihold, icur, mstep, mcfg, diag — с теми же
- * ответами. При старте, как и основная прошивка, отправляет строку диагностики
+ * op=, om=, debug=, scan=, stop, irun, ihold, icur, mstep, mcfg, diag — с теми
+ * же ответами. Режим выдачи телеметрии om= (по таймеру op / по достижению
+ * целевой позиции / оба; событийный кадр помечается ev:1) работает по модели
+ * движения так же, как в основной прошивке. При старте, как и основная прошивка, отправляет строку диагностики
  * энкодера (у имитатора — всегда успешную): enc:ok n=16/16 spread=0.000 pos=<...>.
  * Команда diag отвечает ok:diag и той же строкой enc:ok.
  *
@@ -27,6 +36,11 @@
  *   2 — фронт SYNC_IN либо delay как тайм-аут. Учитываются только фронты,
  *   пришедшие после выхода SYNC_OUT в HIGH (точка достигнута).
  *   Команда sync выводит состояние: sync=<N> in=<0|1> out=<0|1> n=<фронтов>.
+ *
+ * Снятие удержания (hold=0/hold=1) моделируется как пауза: модель движения
+ * замирает, скан заморожен, цель и точка скана сохраняются — после hold=1
+ * движение продолжается к той же уставке, как в основной прошивке (у
+ * имитатора вал за паузу не сползает — сползать нечему).
  */
 
 #include "stm32f1xx_hal.h"
@@ -44,6 +58,7 @@ static void BSP_Init(void);
 static void PollTimer_Init(void);
 static void ProcessCommand(const Cmd_Result *cmd);
 static void SendResponse(const char *fmt, ...);
+static void Boot_Banner(void);
 static void PollCommands(void);
 static void MotorControl_Tick(void);
 static void Telemetry_Tick(void);
@@ -83,8 +98,48 @@ static IWDG_HandleTypeDef hiwdg;
 static float    g_sim_pos_deg    = SIM_START_POS_DEG; ///< Виртуальная позиция «энкодера»
 static float    g_target_deg     = 0;           ///< Целевая позиция (градусы)
 static uint8_t  g_enabled        = 1;           ///< Флаг разрешения движения
+/* Удержание вала (команда hold=): 0 — обмотки обесточены на время замера,
+ * 1 — штатная работа. В отличие от dis состояние контура не сбрасывается:
+ * цель, точка скана и уже выданный событийный кадр сохраняются. */
+static uint8_t  g_hold           = 1;
 static uint16_t g_output_period  = OUTPUT_PERIOD_MS_DEFAULT; ///< Период телеметрии
 static uint8_t  g_telem_debug    = TELEMETRY_DEBUG_DEFAULT;  ///< Флаг расширенной телеметрии
+
+/**
+ * @brief Источник выдачи телеметрии (команда om=N) — как в основной прошивке.
+ */
+typedef enum {
+    TELEM_SRC_PERIOD = 0,   ///< Только период op= (по умолчанию)
+    TELEM_SRC_TARGET,       ///< Только момент достижения целевой позиции
+    TELEM_SRC_BOTH          ///< Период op= и дополнительный кадр по достижению
+} TelemSrc;
+
+static uint8_t  g_telem_mode     = TELEMETRY_MODE_DEFAULT;   ///< Источник выдачи (om=)
+static uint8_t  g_at_target      = 0;   ///< Уровень «вал стоит в цели» (событие — по фронту)
+static uint8_t  g_telem_evt      = 0;   ///< Защёлка событийного кадра (до реальной отправки)
+static float    g_evt_deg        = 0;   ///< Позиция на момент достижения цели
+static float    g_evt_tp         = 0;   ///< Цель на момент достижения
+static uint32_t g_dropped_tx     = 0;   ///< Потерянные строки телеметрии (поле drp)
+
+/** Сброс ожидания «приехали»: новая цель — новое событие, даже если вал уже там. */
+static inline void Target_ResetReached(void)
+{
+    g_at_target = 0;
+}
+
+/** Приход в цель: взводит событийный кадр телеметрии (режимы om=1/2). */
+static inline void Target_MarkReached(void)
+{
+    if (g_at_target) return;
+    g_at_target = 1;
+    if (g_telem_mode == TELEM_SRC_PERIOD) return;
+    /* Прежний событийный кадр не успел уйти — вытесняем его и считаем потерю
+     * в drp (как переполнение очереди), чтобы пропажа была видна хосту. */
+    if (g_telem_evt) g_dropped_tx++;
+    g_evt_deg   = g_sim_pos_deg;
+    g_evt_tp    = g_target_deg;
+    g_telem_evt = 1;
+}
 
 static float    g_last_ctrl      = 0;           ///< Последнее «управляющее воздействие» (град/тик)
 static uint8_t  g_was_outside_db = 0;           ///< Флаг выхода из мертвой зоны (для доводки)
@@ -182,6 +237,38 @@ static void SendEncDiagOk(void)
                  (double)g_sim_pos_deg);
 }
 
+/**
+ * @brief Boot-баннер: причина последнего сброса и версия прошивки.
+ *
+ * Полная копия Boot_Banner основной прошивки (порядок флагов и формат строки
+ * обязаны совпадать байт в байт): одна строка `boot:rst=<флаги> fw=<версия>`
+ * сразу после подъёма UART. Флаги берутся из RCC->CSR — регистр и у имитатора
+ * настоящий, так что перезагрузка по IWDG (rst=iwdg) видна на хосте так же,
+ * как на боевой плате.
+ */
+static void Boot_Banner(void)
+{
+    uint32_t csr = RCC->CSR;
+    char flags[48];
+    int n = 0;
+    flags[0] = '\0';
+    /* Порядок флагов зафиксирован (por,pin,sft,iwdg,wwdg,lpwr) */
+    #define RST_APPEND(bit, name) \
+        do { if (csr & (bit)) \
+            n += snprintf(flags + n, sizeof(flags) - (size_t)n, "%s" name, n ? "," : ""); \
+        } while (0)
+    RST_APPEND(RCC_CSR_PORRSTF,  "por");
+    RST_APPEND(RCC_CSR_PINRSTF,  "pin");
+    RST_APPEND(RCC_CSR_SFTRSTF,  "sft");
+    RST_APPEND(RCC_CSR_IWDGRSTF, "iwdg");
+    RST_APPEND(RCC_CSR_WWDGRSTF, "wwdg");
+    RST_APPEND(RCC_CSR_LPWRRSTF, "lpwr");
+    #undef RST_APPEND
+    if (flags[0] == '\0') { flags[0] = '-'; flags[1] = '\0'; }
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+    SendResponse("boot:rst=%s fw=%s\r\n", flags, FW_VERSION);
+}
+
 /* --- MAIN --- */
 
 int main(void)
@@ -192,6 +279,9 @@ int main(void)
 
     /* Неблокирующая инициализация: UART → таймер опроса → IWDG */
     while (UART_Init() != 0) { }
+
+    /* Баннер загрузки — первым, как в основной прошивке */
+    Boot_Banner();
 
     /* «Диагностика энкодера»: у имитатора всегда успешна — сообщение как у
      * основной прошивки (enc:ok), чтобы хост-софт видел одинаковый старт. */
@@ -242,11 +332,21 @@ static void MotorControl_Tick(void)
 {
     if (!g_enabled) {
         g_last_ctrl = 0;
+        Target_ResetReached();
+        return;
+    }
+    if (!g_hold) {
+        /* Удержание снято: обмотки обесточены, модель на паузе. Цель и
+         * состояние «приехали» не трогаем — после hold=1 движение идёт к той
+         * же уставке, повторного событийного кадра по точке не будет. */
+        g_last_ctrl = 0;
         return;
     }
     g_last_ctrl = 0;
 
     if (g_cont_dir != 0) {
+        /* Непрерывное вращение: понятия «цель достигнута» нет */
+        Target_ResetReached();
         /* Непрерывное вращение на пределе v= с рампой a= (как в основной) */
         float v = Motion_Limit((float)g_cont_dir * vmax_per_tick(), 0, 0);
         g_sim_pos_deg += v;
@@ -261,6 +361,7 @@ static void MotorControl_Tick(void)
 
     if (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) {
         g_was_outside_db = 1;
+        Target_ResetReached();
         float v = Motion_Limit(err, err, 1);
         if (g_scan_st == SCAN_MOVING && v != 0.0f)
             HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
@@ -288,13 +389,14 @@ static void MotorControl_Tick(void)
             g_scan_delay_cnt = 0;
             g_syncin_trig    = 0; /* фронты SYNC_IN до выхода SYNC_OUT в HIGH не считаются */
         }
+        /* Доводка в модели мгновенная, поэтому событие «приехали» взводится в
+         * том же тике (в основной прошивке — после отработки шагов снапа). */
+        Target_MarkReached();
         g_vel_cmd = 0;   /* цель достигнута — обнуляем скорость рампы (как Control_Reset) */
     }
 }
 
 /* --- Телеметрия --- */
-
-static uint32_t g_dropped_tx = 0;
 
 static void TransmitAll(const uint8_t *buf, uint16_t len)
 {
@@ -305,30 +407,51 @@ static void TransmitAll(const uint8_t *buf, uint16_t len)
     UART_Task();
 }
 
+/**
+ * @brief Выдача телеметрии: по периоду op= и/или по достижению цели (om=).
+ *        Логика идентична основной прошивке (см. её Telemetry_Tick).
+ */
 static void Telemetry_Tick(void)
 {
     static uint16_t cnt = 0;
-    if (g_output_period == 0) return;
     /* Даём коротким CLI-ответам уйти целой строкой, не перемешивая их с телеметрией. */
     if (UART_TxPending()) return;
-    /* При полной телеметрии (debug=1) используем не меньший период */
-    uint16_t period = g_telem_debug ? (g_output_period >= OUTPUT_PERIOD_MS_DEBUG_MIN ? g_output_period : OUTPUT_PERIOD_MS_DEBUG_MIN) : g_output_period;
-    if (++cnt < period) return;
-    cnt = 0;
+
+    uint8_t evt = g_telem_evt;
+    uint8_t periodic = 0;
+    if (g_telem_mode != TELEM_SRC_TARGET && g_output_period != 0) {
+        /* При полной телеметрии (debug=1) используем не меньший период */
+        uint16_t period = g_telem_debug ? (g_output_period >= OUTPUT_PERIOD_MS_DEBUG_MIN ? g_output_period : OUTPUT_PERIOD_MS_DEBUG_MIN) : g_output_period;
+        if (++cnt >= period) {
+            cnt = 0;
+            periodic = 1;
+        }
+    } else {
+        cnt = 0;
+    }
+    if (!periodic && !evt) return;
+    g_telem_evt = 0;
+
+    /* Кадр по достижению цели помечаем ev:1 — иначе в режиме om=2 его не
+     * отличить от периодического. В периодическом кадре поля нет вовсе. */
+    const char *ev = evt ? ",ev:1" : "";
 
     char buf[160];
-    float deg = g_sim_pos_deg;
+    /* В событийном кадре — снимок момента достижения цели */
+    float deg = evt ? g_evt_deg : g_sim_pos_deg;
+    float tp  = evt ? g_evt_tp  : g_target_deg;
     int len;
 
     if (g_telem_debug)
         len = snprintf(buf, sizeof(buf),
-            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f,v:%.1f,a:%.1f,of:0,drp:%lu\r\n",
-            (double)deg, (double)g_target_deg, (double)(g_target_deg - deg),
+            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f,v:%.1f,a:%.1f,of:0,drp:%lu%s\r\n",
+            (double)deg, (double)tp, (double)(tp - deg),
             (double)g_last_ctrl, "cl",
             (unsigned)ERR_OK, (double)g_kp, (double)g_ki, (double)g_kd,
-            (double)g_vmax_deg_s, (double)g_accel_deg_s2, (unsigned long)g_dropped_tx);
+            (double)g_vmax_deg_s, (double)g_accel_deg_s2, (unsigned long)g_dropped_tx, ev);
     else
-        len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u\r\n", (double)deg, (unsigned)ERR_OK);
+        len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u%s\r\n",
+                       (double)deg, (unsigned)ERR_OK, ev);
 
     if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;  /* snprintf усёк */
     if (len > 0) TransmitAll((uint8_t *)buf, (uint16_t)len);
@@ -367,6 +490,10 @@ static void SyncIn_Tick(void)
 static void Scan_Tick(void)
 {
     if (g_scan_st != SCAN_DELAY) return;
+    /* Удержание снято — скан заморожен (как в основной прошивке): таймер delay
+     * не тикает, точка не меняется. Фронт SYNC_IN, пришедший за это время,
+     * остаётся во взведённом g_syncin_trig и сработает сразу после hold=1. */
+    if (!g_hold) return;
 
     /* Переход к следующей точке: по таймеру delay и/или фронту SYNC_IN (sync=) */
     uint8_t timer_ok = (g_scan_delay_ms != 0 &&
@@ -406,6 +533,8 @@ static void Scan_Tick(void)
     g_scan_cur   = next;
     g_scan_st    = SCAN_MOVING;
     g_scan_delay_cnt = 0;
+    /* Каждая точка скана — отдельная цель: один событийный кадр на точку */
+    Target_ResetReached();
     HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
 }
 
@@ -442,9 +571,11 @@ static void ProcessCommand(const Cmd_Result *cmd)
 
     case CMD_ENABLE:
         g_enabled  = 1;
+        g_hold     = 1;            /* en возвращает в работу целиком, в т.ч. из hold=0 */
         g_cont_dir = 0;
         g_target_deg = g_sim_pos_deg;
         g_vel_cmd    = 0;
+        Target_ResetReached();
         SendResponse("ok:en\r\n");
         break;
 
@@ -457,13 +588,15 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_SET_TARGET:
         g_cont_dir   = 0;
         g_target_deg = cmd->target;
+        /* Новая цель — новый событийный кадр (om=1/2), даже если вал уже в ней */
+        Target_ResetReached();
         SendResponse("ok:t=%.2f\r\n", (double)g_target_deg);
         break;
 
     case CMD_CONTINUOUS:
         g_cont_dir = cmd->continuous_dir;
         g_scan_st  = SCAN_IDLE;
-        if (!g_enabled) g_enabled = 1;
+        if (!g_enabled || !g_hold) { g_enabled = 1; g_hold = 1; }
         SendResponse("ok:t=%c\r\n", (g_cont_dir > 0) ? '+' : '-');
         break;
 
@@ -485,6 +618,12 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_SET_OUTPUT_PERIOD:
         g_output_period = cmd->output_period_ms;
         SendResponse("ok:op=%u\r\n", (unsigned)g_output_period);
+        break;
+
+    case CMD_SET_OUTPUT_MODE:
+        g_telem_mode = cmd->output_mode;   /* 0..2 гарантирует парсер */
+        g_telem_evt  = 0;   /* событие прежнего режима отменяем */
+        SendResponse("ok:om=%u\r\n", (unsigned)g_telem_mode);
         break;
 
     case CMD_SET_DEBUG:
@@ -516,6 +655,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_delay_cnt = 0;
         g_scan_dir       = inf ? inf : 1;
         g_scan_inf       = inf;
+        Target_ResetReached();
         g_syncin_trig    = 0;  /* фронт, пришедший до старта скана, не считается */
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         if (inf)
@@ -533,6 +673,7 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_st  = SCAN_IDLE;
         g_target_deg = g_sim_pos_deg;
         g_vel_cmd    = 0;
+        Target_ResetReached();
         g_syncin_trig = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         SendResponse("ok:stop\r\n");
@@ -605,6 +746,17 @@ static void ProcessCommand(const Cmd_Result *cmd)
         SendEncDiagOk();
         break;
 
+    case CMD_SET_HOLD:
+        /* hold=0 — тихая пауза для замера (обмотки обесточены), hold=1 —
+         * возврат к той же цели. Ни цель, ни состояние скана, ни выданный по
+         * точке событийный кадр не меняются. */
+        g_hold = cmd->hold;        /* 0|1 гарантирует парсер */
+        if (g_hold)
+            g_was_outside_db = 1;  /* доводка после подачи тока, как в основной */
+        g_vel_cmd = 0;             /* рампа с нуля: вал стоял без тока */
+        SendResponse("ok:hold=%u\r\n", (unsigned)g_hold);
+        break;
+
     case CMD_SET_SYNC:
         g_sync_mode = cmd->sync_mode;   /* 0..2 гарантирует парсер */
         SendResponse("ok:sync=%u\r\n", (unsigned)g_sync_mode);
@@ -616,6 +768,15 @@ static void ProcessCommand(const Cmd_Result *cmd)
             (unsigned)(HAL_GPIO_ReadPin(SYNC_IN_PORT, SYNC_IN_PIN) == GPIO_PIN_SET),
             (unsigned)(HAL_GPIO_ReadPin(SYNC_OUT_PORT, SYNC_OUT_PIN) == GPIO_PIN_SET),
             (unsigned long)g_syncin_edges);
+        break;
+
+    case CMD_GET_HOLD:
+        /* Как в основной прошивке: запрос состояния — ответ без префикса ok: */
+        SendResponse("hold=%u\r\n", (unsigned)g_hold);
+        break;
+
+    case CMD_GET_OUTPUT_MODE:
+        SendResponse("om=%u\r\n", (unsigned)g_telem_mode);
         break;
 
     case CMD_UNKNOWN:

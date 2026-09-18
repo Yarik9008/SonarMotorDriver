@@ -11,11 +11,14 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QGroupBox,
 from .. import protocol as P
 from ..device_state import DeviceState
 from ..metrics import METRICS, label
-from ..theme import set_chip
+from ..theme import COLORS, set_chip
 from ..transport.serial_transport import find_stm32_port, list_serial_ports
 from .param_row import ParamRow
 
 _PORT_LABEL_MAX = 34  # символов в закрытом комбобоксе; полный текст — в тултипе
+
+_OM_TOOLTIP = ("Когда плата шлёт кадр телеметрии (om=): по периоду op=, "
+               "по приходу в цель (кадр помечается ev:1) или оба источника")
 
 
 def _elide(text: str, max_len: int = _PORT_LABEL_MAX) -> str:
@@ -94,6 +97,41 @@ class ConnectionPanel(QGroupBox):
         self._row_op.set_format("{:.0f}")
         root.addWidget(self._row_op)
 
+        # Источник кадра (om=0/1/2): как и sync=, подтверждается ответом
+        # ok:om=N. Пользовательский выбор ловим через activated — программная
+        # установка из apply_state сигнала не даёт, петли подтверждения нет.
+        self._om_confirmed: int | None = None   # последний подтверждённый om=
+        row_om = QHBoxLayout()
+        cap_om = QLabel("Источник кадра")
+        cap_om.setProperty("dim", "true")
+        cap_om.setToolTip(_OM_TOOLTIP)
+        row_om.addWidget(cap_om)
+        self._om = QComboBox()
+        for mode in P.OUTPUT_MODE_VALUES:
+            self._om.addItem(P.OUTPUT_MODE_LABELS[mode], mode)
+        self._om.setToolTip(_OM_TOOLTIP)
+        self._om.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._om.setMinimumContentsLength(14)
+        self._om.setMinimumWidth(120)
+        self._om.activated.connect(self._on_output_mode)
+        row_om.addWidget(self._om, 1)
+        # Ручной перезапрос — как ⟳ у синхронизации в ScanPanel: в телеметрии
+        # om= нет, и если ответ на команду затерялся (или плата перезапустилась
+        # до того, как GUI это заметил), выправить список больше нечем.
+        self._om_refresh = QPushButton("⟳")
+        self._om_refresh.setToolTip("Запросить у платы источник кадра (om)")
+        self._om_refresh.setFixedWidth(28)
+        self._om_refresh.clicked.connect(
+            lambda: self._send(P.cmd_output_mode_query()))
+        row_om.addWidget(self._om_refresh)
+        root.addLayout(row_om)
+
+        self._om_status = QLabel()
+        self._om_status.setProperty("dim", "true")
+        root.addWidget(self._om_status)
+        self._show_output_mode(None)
+
         self._debug = QCheckBox("Полная телеметрия (debug=1)")
         self._debug.setToolTip("Полная телеметрия: ошибка, управление, PID, потери кадров")
         self._debug.toggled.connect(lambda on: self._send(P.cmd_debug(on)))
@@ -124,6 +162,21 @@ class ConnectionPanel(QGroupBox):
     def _update_port_tooltip(self) -> None:
         tip = self._port.itemData(self._port.currentIndex(), Qt.ItemDataRole.ToolTipRole)
         self._port.setToolTip(tip or "")
+
+    def _on_output_mode(self) -> None:
+        self._send(P.cmd_output_mode(self._om.currentData()))
+
+    def _show_output_mode(self, mode: int | None) -> None:
+        """Эхо подтверждённого платой режима (ok:om=N); расхождение с выбором
+        в списке подсвечивается, как несовпадение в ParamRow."""
+        self._om_status.setText(
+            f"подтверждено: {P.OUTPUT_MODE_LABELS.get(mode, '—')}")
+        if mode is None:
+            self._om_status.setStyleSheet("")
+        elif mode != self._om.currentData():
+            self._om_status.setStyleSheet(f"color: {COLORS['mismatch']};")
+        else:
+            self._om_status.setStyleSheet(f"color: {COLORS['text_dim']};")
 
     def _on_mode(self) -> None:
         serial = self._rb_serial.isChecked()
@@ -170,10 +223,43 @@ class ConnectionPanel(QGroupBox):
 
     def apply_state(self, st: DeviceState) -> None:
         self._row_op.set_confirmed(st.op_ms)
+        # Список подтягиваем только на смену подтверждённого значения:
+        # apply_state зовётся на каждый кадр телеметрии (при op=4 — сотни раз
+        # в секунду), и возврат к прежнему значению перебивал бы свежий выбор
+        # пользователя, пока ok:om= ещё в пути.
+        if st.output_mode != self._om_confirmed:
+            self._om_confirmed = st.output_mode
+            if st.output_mode is not None:
+                i = self._om.findData(st.output_mode)
+                if i >= 0:
+                    self._om.setCurrentIndex(i)
+        self._show_output_mode(st.output_mode)
+
+    def apply_output_mode_reply(self, mode: int | None) -> None:
+        """Ответ на явный запрос `om` (строка om=N, без префикса ok:)
+        — авторитетен: список становится тем, что фактически на плате.
+
+        Охранник apply_state срабатывает только на смену подтверждённого
+        значения, поэтому ответ «у меня всё тот же режим» сам по себе список
+        не выправил бы (команда om= могла не дойти, плата — перезагрузиться).
+        """
+        if mode is None:
+            return
+        self._om_confirmed = mode
+        i = self._om.findData(mode)
+        if i >= 0:
+            # Программная установка не даёт activated — команда om= обратно
+            # не уходит.
+            self._om.setCurrentIndex(i)
+        self._show_output_mode(mode)
 
     def reset(self) -> None:
         self._row_op.reset()
+        self._om_confirmed = None
+        self._show_output_mode(None)
 
     def set_enabled_controls(self, on: bool) -> None:
         self._row_op.setEnabled(on)
+        self._om.setEnabled(on)
+        self._om_refresh.setEnabled(on)
         self._debug.setEnabled(on)

@@ -30,6 +30,17 @@ class DeviceState:
     a: float | None = None
     op_ms: int | None = None
 
+    # Источник кадра телеметрии (ok:om=N) и удержание вала (ok:hold=N):
+    # оба подтверждаются ответом на команду, в телеметрии их нет.
+    output_mode: int | None = None
+    hold: int | None = None
+
+    # Синхронизация скана: режим из ok:sync=N, остальное — из запроса `sync`
+    sync_mode: int | None = None
+    sync_in: int | None = None
+    sync_out: int | None = None
+    sync_edges: int | None = None
+
     has_telemetry: bool = False
 
 
@@ -76,6 +87,13 @@ class DeviceStateModel(QObject):
         if hasattr(self._st, key):
             setattr(self._st, key, value)
             self._emit()
+
+    def apply_sync(self, data: dict) -> None:
+        """Статус синхронизации из ответа на запрос `sync` (см. protocol.parse_sync)."""
+        for key in ("sync_mode", "sync_in", "sync_out", "sync_edges"):
+            if key in data:
+                setattr(self._st, key, int(data[key]))
+        self._emit()
 
     def reset(self, *, keep_connection: bool = False) -> None:
         channel = self._st.channel

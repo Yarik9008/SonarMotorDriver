@@ -16,10 +16,33 @@ from .transport.base import Transport
 
 RESPONSE_TIMEOUT_MS = 400
 
+# Ответы, по которым плата подтверждает удержание вала, не отвечая ok:hold=:
+# en и джог сами снимают hold=0 (main.c CMD_ENABLE и CMD_CONTINUOUS), иначе
+# индикатор показывал бы «обмотки обесточены» на уже работающем вале.
+_HOLD_RESTORED_REPLIES = ("ok:en", "ok:t=+", "ok:t=-")
+
+
+def _extra_confirmed(line: str) -> tuple[str, int] | None:
+    """Подтверждения, которых нет в protocol.parse_ok_reply.
+
+    Возвращает (ключ DeviceState, значение) для ok:om=N и ok:hold=N либо None.
+    """
+    s = line.strip()
+    if s in _HOLD_RESTORED_REPLIES:
+        return ("hold", 1)
+    for pfx, key in (("ok:om=", "output_mode"), ("ok:hold=", "hold")):
+        if s.startswith(pfx):
+            try:
+                return (key, int(s[len(pfx):]))
+            except ValueError:
+                return None
+    return None
+
 
 class DeviceClient(QObject):
     telemetry = Signal(dict)         # разобранная телеметрия
     mcfg = Signal(dict)              # ответ mcfg
+    sync_status = Signal(dict)       # ответ на запрос `sync` (режим, пины, счётчик)
     reply = Signal(str)              # любая строка-ответ (ok:/err:/mcfg)
     connected = Signal(bool)         # состояние канала
     conn_error = Signal(str)         # ошибка канала (текст пользователю)
@@ -27,6 +50,8 @@ class DeviceClient(QObject):
     response_timeout = Signal(str)   # на команду не пришёл ответ
     scan_sector = Signal(object)     # (start, end) или None — для подсветки на диаграмме
     param_confirmed = Signal(str, object)  # ключ DeviceState, значение из ok:
+    param_queried = Signal(str, object)    # то же ответом на запрос `om` / `hold`
+    board_rebooted = Signal(dict)    # пришёл boot: — плата поднялась заново
 
     def __init__(self, logger: Logger):
         super().__init__()
@@ -112,16 +137,53 @@ class DeviceClient(QObject):
                 self.mcfg.emit(data)
             self.reply.emit(line)
             return
+        if kind == "sync":
+            self._resolve_pending()
+            data = P.parse_sync(line)
+            if data:
+                self.sync_status.emit(data)
+            self.reply.emit(line)
+            return
         if kind == "reply":
             self._resolve_pending()
             parsed = P.parse_ok_reply(line)
             if parsed:
                 self.param_confirmed.emit(*parsed)
+            extra = _extra_confirmed(line)
+            if extra:
+                self.param_confirmed.emit(*extra)
+            # Ответ на запрос состояния (om=N / hold=N без префикса ok:) — это
+            # не эхо нашей команды, а фактическое состояние платы, поэтому кроме
+            # обычного подтверждения идёт отдельным сигналом: виджеты обязаны
+            # ему подчиниться, даже если значение не изменилось (см. MainWindow._wire).
+            queried = P.parse_state_reply(line)
+            if queried:
+                self.param_confirmed.emit(*queried)
+                self.param_queried.emit(*queried)
             self.reply.emit(line)
             return
         # прочие строки (напр. enc:ok при diag/старте, err:motor_init) — не ответ
         # на команду в смысле FIFO, очередь не трогаем.
+        boot = P.parse_boot(line)
+        if boot is not None:
+            self._on_boot_banner(boot)
         self.reply.emit(line)
+
+    def _on_boot_banner(self, info: dict) -> None:
+        """Плата объявила о своём перезапуске (main.c Boot_Banner).
+
+        Всё, что было о ней известно, устарело разом: прошивка поднялась со
+        стартовыми значениями (в т.ч. hold=1 — обмотки снова под током), а
+        команды, ждавшие ответа, ушли вместе с прошлым запуском. Ожидание
+        ответов снимаем здесь, иначе по каждой из них без толку сработает
+        таймаут; перезапрос состояния делает MainWindow по board_rebooted.
+        """
+        if self._pending:
+            lost = ", ".join(self._pending)
+            self._logger.log_err(
+                f"Плата перезапустилась, ответа уже не будет на: {lost}")
+        self._cancel_timeout()
+        self.board_rebooted.emit(info)
 
     def _resolve_pending(self) -> None:
         """Пришёл ответ на голову очереди: снимаем её и перевзводим таймаут."""

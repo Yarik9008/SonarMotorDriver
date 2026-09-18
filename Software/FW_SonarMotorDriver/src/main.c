@@ -2,6 +2,12 @@
  * @file main.c
  * @brief Основной модуль приложения. Координация работы всех подсистем.
  *
+ * Система координат — кольцевая, один оборот: позиция, цель и точки скана
+ * всегда лежат в [0,360), накопителя оборотов нет. Ход к цели идёт всегда
+ * кратчайшим путём (≤180°), при пересечении нуля координата заворачивается
+ * (359.9° → 0.1°). Непрерывное вращение (t+/t-) и бесконечный скан при этом
+ * не ограничены — вал крутится сколько угодно, отображается остаток от 360°.
+ *
  * Модуль реализует:
  * - Инициализацию аппаратной части и программных модулей (неблокирующая стейт-машина).
  * - Стартовую диагностику энкодера ДО разрешения движения (серия чтений BiSS-C:
@@ -12,13 +18,19 @@
  * - Защиту от блокировки вала: команда есть, вал по энкодеру стоит дольше
  *   STALL_TIMEOUT_MS — драйвер выключается, хост получает err:stall.
  * - Обработку команд пользователя через UART.
- * - Периодический вывод телеметрии.
+ * - Вывод телеметрии: периодический (op=) и/или по достижению целевой позиции
+ *   (om=; событийный кадр помечается полем ev:1 и содержит снимок позиции на
+ *   момент прихода в точку).
  * - Логику автоматического сканирования секторов.
  * - Синхронизацию с внешним оборудованием: SYNC_OUT (LOW — движение к точке,
  *   HIGH — точка достигнута) и внешний триггер SYNC_IN — команда sync=N
  *   выбирает источник перехода к следующей точке скана (0 — таймер delay,
  *   1 — фронт SYNC_IN, 2 — фронт либо delay как тайм-аут), команда sync
  *   выводит состояние (режим, уровни пинов, счётчик фронтов).
+ * - Снятие удержания на время замера: hold=0 обесточивает силовую часть
+ *   (драйвер перестаёт шуметь), hold=1 возвращает ток. Цель, точка скана и
+ *   состояние «приехали» переживают паузу без изменений, скан на это время
+ *   заморожен — следующая точка считается от той же уставки.
  */
 
 #include "stm32f1xx_hal.h"
@@ -43,7 +55,7 @@ static void Sample_ISR(void);
 static void ProcessCommand(const Cmd_Result *cmd);
 static void SendResponse(const char *fmt, ...);
 static void PollCommands(void);
-static void Encoder_Accumulate(const BiSS_Reading *rd);
+static void Encoder_Update(const BiSS_Reading *rd);
 static uint8_t Encoder_FilterOutlier(const BiSS_Reading *rd);
 static void Mode_Update(uint8_t enc_ok);
 static void MotorControl_Tick(uint8_t enc_ok);
@@ -58,11 +70,10 @@ static void SyncIn_Tick(void);
 #define DEG_PER_STEP_DEFAULT (360.0f / (float)MOTOR_STEPS_PER_REV)
 #define MAX_DEG_PER_TICK ((float)MAX_SPEED_DEG_S / (float)POLL_FREQ_HZ)
 #define DT_S             (1.0f / (float)POLL_FREQ_HZ)
+/* Позиция энкодера ограничена одним оборотом (< ENCODER_COUNTS_REV), поэтому
+ * перевода в double больше не требуется: во float результат в [0,360) имеет
+ * погрешность ~2e-5° — на три порядка ниже точности самого энкодера. */
 #define COUNTS_TO_DEG(c) ((float)(c) * 360.0f / (float)ENCODER_COUNTS_REV)
-/* Double-версия: для абсолютной позиции (g_enc_counts до ~3.6e9 отсчётов
- * теряет во float до ~0.7°) и накопителей цели — сужаем во float только
- * малые разности (ошибку контура). */
-#define COUNTS_TO_DEG_D(c) ((double)(c) * 360.0 / (double)ENCODER_COUNTS_REV)
 
 /* Тиков опроса до принудительного прерывания зависшего DMA-чтения BiSS */
 #define BISS_DMA_TIMEOUT_TICKS \
@@ -89,6 +100,21 @@ static inline float clampf(float v, float lo, float hi)
 static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi)
 { return (v < lo) ? lo : (v > hi) ? hi : v; }
 
+/* Приведение угла к кольцевому диапазону [0,360). Единственная точка, где
+ * координата нормализуется: любая позиция, цель и точка скана проходят через
+ * неё, поэтому значений вне [0,360) в системе не существует. */
+static inline double wrap360(double deg)
+{
+    deg = fmod(deg, 360.0);
+    if (deg < 0.0) deg += 360.0;
+    /* Отрицательное значение, близкое к нулю, после сложения округляется
+     * ровно до 360.0 — иначе граница диапазона протекла бы наружу. */
+    if (deg >= 360.0) deg = 0.0;
+    return deg;
+}
+
+/* Ошибка до цели по кратчайшему пути: результат в (-180,180]. Оба аргумента
+ * уже в [0,360), так что разность лежит в (-360,360) — по одной итерации. */
 static inline float shortest_path_err(float target, float pos)
 {
     float err = target - pos;
@@ -391,13 +417,68 @@ static PID_State g_pid = {
     .initialized = 0
 };
 
-static double   g_target_deg     = 0;           ///< Целевая позиция (градусы), double — накопитель
+static double   g_target_deg     = 0;           ///< Целевая позиция [0,360), double — накопитель
 static uint8_t  g_enabled        = 1;           ///< Флаг разрешения работы (движение разрешено)
+/* Удержание вала (команда hold=): 0 — обмотки обесточены на время замера
+ * (драйвер молчит, вал свободен), 1 — штатная работа. От dis отличается тем,
+ * что состояние контура не сбрасывается: цель, точка скана и уже выданный
+ * событийный кадр сохраняются, поэтому после hold=1 вал возвращается к той же
+ * уставке, а скан продолжается со следующей по счёту точки. */
+static uint8_t  g_hold           = 1;
 static uint16_t g_output_period  = OUTPUT_PERIOD_MS_DEFAULT; ///< Период телеметрии
 static uint8_t  g_telem_debug    = TELEMETRY_DEBUG_DEFAULT;  ///< Флаг расширенной телеметрии
 
-static uint32_t g_enc_raw_prev   = 0xFFFFFFFF;  ///< Предыдущее "сырое" значение энкодера (для дельты)
-static int64_t  g_enc_counts     = 0;           ///< Накопленный счетчик импульсов (многооборотность)
+/**
+ * @brief Источник выдачи телеметрии (команда om=N).
+ */
+typedef enum {
+    TELEM_SRC_PERIOD = 0,   ///< Только период op= (по умолчанию)
+    TELEM_SRC_TARGET,       ///< Только момент достижения целевой позиции
+    TELEM_SRC_BOTH          ///< Период op= и дополнительный кадр по достижению
+} TelemSrc;
+
+static uint8_t  g_telem_mode     = TELEMETRY_MODE_DEFAULT;   ///< Источник выдачи (om=)
+/* Уровень «мотор стоит в цели»: взводится один раз при входе в deadband и
+ * держится, пока цель не сменится или вал не уйдёт из зоны. Нужен именно
+ * уровень, а не мгновенное условие: событие телеметрии — это переход
+ * «еду» → «приехал», а не поток кадров на стоянке. */
+static uint8_t  g_at_target      = 0;
+/* Разрешение на событийный кадр — ровно одно на одну цель. Взводится только
+ * сменой цели, расходуется выданным событием. Одного уровня g_at_target для
+ * этого мало: шум энкодера сравним с PID_DEADBAND_DEG (0.05° против
+ * ENCODER_ACCURACY_DEG 0.05°), и дребезг вокруг зоны на стоянке в точке скана
+ * снимал бы уровень и взводил заново, давая по нескольку кадров на точку. */
+static uint8_t  g_evt_armed      = 0;
+/* Защёлка события для Telemetry_Tick: снимается только после того, как кадр
+ * реально ушёл в UART (в момент достижения очередь TX может быть занята,
+ * а терять событийный кадр нельзя — на нём построен хендшейк с хостом). */
+static uint8_t  g_telem_evt      = 0;
+/* Позиция и цель, снятые в момент достижения: кадр может уйти на 1–2 тика
+ * позже (занята очередь TX, скан уже уехал к следующей точке), а хосту нужен
+ * угол именно того момента, к которому привязан замер. */
+static double   g_evt_deg        = 0;
+static double   g_evt_tp         = 0;
+static uint32_t g_dropped_tx     = 0;   ///< Потерянные строки телеметрии (поле drp)
+
+/** Сброс ожидания «приехали»: новая цель — новое событие, даже если вал уже там. */
+static inline void Target_ResetReached(void)
+{
+    g_at_target = 0;
+    g_evt_armed = 1;
+}
+
+/** Вал ушёл из зоны у прежней цели. Уровень снимаем — приход обратно снова
+ *  будет переходом «еду» → «приехал», — но права на кадр не выдаём: цель та же,
+ *  а кадр по ней уже ушёл. */
+static inline void Target_LeftDeadband(void)
+{
+    g_at_target = 0;
+}
+
+/* Позиция вала целиком: энкодер абсолютный в пределах оборота, поэтому
+ * последнее принятое сырое чтение и есть текущая координата. Накопителя
+ * оборотов нет — 0xFFFFFFFF означает «валидных чтений ещё не было». */
+static uint32_t g_enc_raw_prev   = 0xFFFFFFFF;  ///< Последнее принятое чтение энкодера, отсчёты
 
 static float    g_last_ctrl      = 0;           ///< Последнее вычисленное управляющее воздействие
 
@@ -406,11 +487,35 @@ static uint32_t g_enc_fail_cnt   = 0;           ///< Счетчик пропус
 static uint8_t  g_enc_outlier    = 0;           ///< Последнее чтение отброшено фильтром выбросов
 static uint32_t g_outlier_cnt    = 0;           ///< Всего отфильтровано выбросов (телеметрия of)
 static uint32_t g_sample_t       = 0;           ///< DWT-момент сэмпла обрабатываемого чтения (фильтр выбросов)
-static double   g_ol_pos         = 0;           ///< Виртуальная позиция для Open-Loop (double — накопитель)
+static double   g_ol_pos         = 0;           ///< Виртуальная позиция Open-Loop [0,360), double — накопитель
 static uint8_t  g_was_outside_db = 0;           ///< Флаг выхода из мертвой зоны (для логики доводки)
-static uint8_t  g_homing         = 0;           ///< Флаг процесса выхода в "дом" после инициализации
 
 static int8_t   g_cont_dir       = 0;           ///< Направление непрерывного вращения (t+/t-)
+
+/** Текущая позиция вала, градусы [0,360). До первого валидного чтения — 0. */
+static inline float Enc_Deg(void)
+{
+    return (g_enc_raw_prev == 0xFFFFFFFF) ? 0.0f : COUNTS_TO_DEG(g_enc_raw_prev);
+}
+
+/** Приход в цель: взводит событийный кадр телеметрии (режимы om=1/2). */
+static inline void Target_MarkReached(void)
+{
+    if (g_at_target) return;
+    g_at_target = 1;
+    if (g_telem_mode == TELEM_SRC_PERIOD) return;
+    /* Строго один кадр на одну цель: разрешение выдаётся только сменой цели и
+     * расходуется здесь. Возврат в зону после дребезга второго кадра не даёт. */
+    if (!g_evt_armed) return;
+    g_evt_armed = 0;
+    /* Предыдущий событийный кадр не успел уйти (очередь TX была занята всю
+     * дорогу до следующей точки) — он вытесняется этим, и потеря видна хосту
+     * в drp, как и переполнение очереди. */
+    if (g_telem_evt) g_dropped_tx++;
+    g_evt_deg   = (g_mode == MODE_CL) ? (double)Enc_Deg() : g_ol_pos;
+    g_evt_tp    = g_target_deg;
+    g_telem_evt = 1;
+}
 
 /* --- Профиль движения (команды v= и a=) --- */
 
@@ -460,10 +565,15 @@ typedef enum {
     SCAN_DELAY      ///< Ожидание в целевой позиции (задержка перед следующим шагом)
 } ScanState;
 
+/* Зигзаг ведётся не в абсолютных углах, а в координате сектора u ∈ [0,span]:
+ * u = 0 — точка start, u = span — точка end, абсолютный угол = start + u
+ * по кольцу. Так сектор, пересекающий ноль (scan=350,10 → start=350,
+ * span=20), разворачивается на краях так же, как обычный. */
 static ScanState g_scan_st       = SCAN_IDLE;
-static double    g_scan_cur      = 0;           ///< Текущая целевая точка сканирования (double — накопитель)
-static float     g_scan_start    = 0;           ///< Начало сектора
-static float     g_scan_end      = 0;           ///< Конец сектора
+static double    g_scan_cur      = 0;           ///< Текущая точка скана, абсолютный угол [0,360)
+static float     g_scan_start    = 0;           ///< Начало сектора, абсолютный угол [0,360)
+static float     g_scan_span     = 0;           ///< Протяжённость сектора от start по ходу возрастания, (0,360]
+static double    g_scan_u        = 0;           ///< Текущая точка в координате сектора [0,span]
 static float     g_scan_step     = 0;           ///< Шаг сканирования
 static uint16_t  g_scan_delay_ms = 0;           ///< Время ожидания в точке
 static uint16_t  g_scan_delay_cnt= 0;           ///< Счетчик времени ожидания
@@ -513,6 +623,13 @@ static void DoSteps(int32_t steps)
     }
     tmc2209_motor_move_steps(steps);
     g_last_ctrl = (float)steps * g_deg_per_step;
+}
+
+/* Ток в обмотках есть только когда система включена (en) и удержание не снято
+ * (hold=1). Единственная точка, где эти два флага сводятся в состояние ENN. */
+static void Drive_ApplyEnable(void)
+{
+    tmc2209_motor_set_enabled(g_enabled && g_hold);
 }
 
 /* Сброс регулятора и профиля движения (смена цели/режима, остановки) */
@@ -594,10 +711,10 @@ int main(void)
                 if (g_enc_diag.passed) {
                     /* Якорь позиции — последнее валидное чтение диагностики */
                     st = g_enc_diag.last_good.status;
-                    Encoder_Accumulate(&g_enc_diag.last_good);
+                    Encoder_Update(&g_enc_diag.last_good);
                 } else {
                     /* Диагностика не пройдена: мотор не включаем, хоуминг
-                     * запрещён (см. Encoder_Accumulate) — ждём оператора. */
+                     * запрещён (см. Encoder_Update) — ждём оператора. */
                     st = g_enc_diag.last_st;
                     g_enabled = 0;
                 }
@@ -645,7 +762,7 @@ int main(void)
                 enc_ok        = 0;
                 g_enc_outlier = 1;
             }
-            if (enc_ok) Encoder_Accumulate(&rd);
+            if (enc_ok) Encoder_Update(&rd);
             Rediag_Feed(st, &rd);
         } else {
             /* Свежих данных в этом тике нет (обмен ещё в полёте) */
@@ -668,38 +785,31 @@ int main(void)
     }
 }
 
-/* --- Многооборотная позиция --- */
+/* --- Позиция вала --- */
 
 /**
- * @brief Обработка данных энкодера и расчет многооборотной позиции.
+ * @brief Приём валидного чтения энкодера как текущей позиции.
  * @param[in] rd Текущее чтение с энкодера (уже прошедшее фильтр выбросов).
  *
- * Вычисляет разность между текущим и предыдущим значением с учетом переполнения
- * (rollover) 17-битного счетчика. При первом вызове производит привязку позиции
- * и расчет целевой точки для плавного старта.
+ * Энкодер абсолютный в пределах оборота, а система координат кольцевая —
+ * поэтому чтение принимается как позиция напрямую, без раскрутки оборотов.
+ * При первом вызове дополнительно выполняется стартовая привязка цели.
  */
-static void Encoder_Accumulate(const BiSS_Reading *rd)
+static void Encoder_Update(const BiSS_Reading *rd)
 {
     if (g_enc_raw_prev == 0xFFFFFFFF) {
-        g_enc_counts   = (int64_t)rd->position;
         g_enc_raw_prev = rd->position;
-        double pos = COUNTS_TO_DEG_D(g_enc_counts);
+        float pos = Enc_Deg();
         g_ol_pos = pos;
-        if (g_enc_diag.passed) {
-            /* Автоматический выход в «дом» разрешён только после успешной
-             * стартовой диагностики энкодера. */
-            g_target_deg = pos + shortest_path_err(STARTUP_TARGET_OFFSET_DEG, (float)pos);
-            g_homing     = 1;
-        } else {
-            /* Энкодер восстановился после провала диагностики: привязываемся
-             * на месте, движение — только по явной команде оператора. */
-            g_target_deg = pos;
-            g_homing     = 0;
-        }
+        /* Автоматический выход в «дом» разрешён только после успешной
+         * стартовой диагностики энкодера; иначе (энкодер восстановился после
+         * провала) привязываемся на месте — движение по команде оператора.
+         * Кратчайший путь до «дома» обеспечивает сам контур: ошибка считается
+         * через shortest_path_err, отдельная привязка цели не нужна. */
+        g_target_deg = g_enc_diag.passed ? wrap360(STARTUP_TARGET_OFFSET_DEG) : pos;
         return;
     }
 
-    g_enc_counts  += enc_wrap_delta(rd->position, g_enc_raw_prev);
     g_enc_raw_prev = rd->position;
 }
 
@@ -731,7 +841,7 @@ static int64_t outlier_budget(uint32_t since_cycles)
 /**
  * @brief Фильтр выбросов: правдоподобно ли новое показание энкодера?
  * @param[in] rd Чтение со статусом BISS_OK / BISS_ERR_WARNING (сэмпл g_sample_t).
- * @return 1 — принять (передать в Encoder_Accumulate), 0 — отбросить.
+ * @return 1 — принять (передать в Encoder_Update), 0 — отбросить.
  *
  * Показание отбрасывается, если сдвиг от последней принятой позиции превышает
  * физически возможный (ENCODER_OUTLIER_MAX_DELTA_DEG за 1 мс, бюджет
@@ -741,8 +851,8 @@ static int64_t outlier_budget(uint32_t since_cycles)
  *
  * Реальный скачок позиции (проскальзывание муфты, восстановление энкодера
  * после долгой потери связи на ходу) отличается от выброса устойчивостью:
- * ENCODER_OUTLIER_STREAK согласных чтений подряд — и позиция перепривязывается
- * штатным путём (дельта через Encoder_Accumulate).
+ * ENCODER_OUTLIER_STREAK согласных чтений подряд — и позиция принимается
+ * штатным путём (через Encoder_Update).
  */
 static uint8_t Encoder_FilterOutlier(const BiSS_Reading *rd)
 {
@@ -805,7 +915,7 @@ static void Mode_Update(uint8_t enc_ok)
         g_enc_fail_cnt++;
         if (g_mode == MODE_CL && g_enc_fail_cnt >= (ENCODER_FAIL_MS / POLL_INTERVAL_MS)) {
             g_mode = MODE_OL;
-            g_ol_pos = COUNTS_TO_DEG_D(g_enc_counts);
+            g_ol_pos = Enc_Deg();
         }
     }
 }
@@ -829,28 +939,40 @@ static void MotorControl_Tick(uint8_t enc_ok)
     if (!g_enabled) {
         tmc2209_motor_stop();
         g_last_ctrl = 0;
+        Target_ResetReached();
+        return;
+    }
+    if (!g_hold) {
+        /* Удержание снято: силовая часть обесточена (мотор остановлен в
+         * обработчике hold=0), контур на паузе. Ни цель, ни состояние
+         * «приехали» не трогаем — иначе после hold=1 хост получил бы второй
+         * событийный кадр по той же точке скана, а уставка уехала бы на
+         * текущую (успевшую сползти) позицию вала. */
+        g_last_ctrl = 0;
         return;
     }
     g_last_ctrl = 0;
 
     if (g_cont_dir != 0) {
+        /* Непрерывное вращение: понятия «цель достигнута» нет — событийная
+         * телеметрия в этом режиме кадров не даёт. */
+        Target_ResetReached();
+        /* Кольцевая координата: позиция и цель просто заворачиваются на нуле,
+         * вращение при этом не ограничено ничем. */
         float v = Motion_Limit((float)g_cont_dir * vmax_per_tick(), 0, 0);
         ApplyVelocity(v);
-        g_ol_pos    += v;
-        g_target_deg+= v;
-        if (g_ol_pos > 1e7f || g_ol_pos < -1e7f) {
-            g_ol_pos = g_target_deg = 0;
-            g_enc_counts = (int64_t)g_enc_raw_prev;
-        }
+        g_ol_pos     = wrap360(g_ol_pos + v);
+        g_target_deg = wrap360(g_target_deg + v);
         return;
     }
 
     if (g_mode == MODE_CL && enc_ok) {
-        /* Вычитание в double, результат (малая ошибка) — во float */
-        float err = (float)(g_target_deg - COUNTS_TO_DEG_D(g_enc_counts));
+        /* Кратчайший путь по кольцу: |err| ≤ 180°, знак задаёт направление */
+        float err = shortest_path_err((float)g_target_deg, Enc_Deg());
 
         if (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) {
             g_was_outside_db = 1;
+            Target_LeftDeadband();
             float pid = PID_Update(&g_pid, err, DT_S);
             float v = Motion_Limit(pid, err, 1);
             ApplyVelocity(v);
@@ -871,14 +993,6 @@ static void MotorControl_Tick(uint8_t enc_ok)
                 }
                 g_was_outside_db = 0;
             }
-            if (g_homing) {
-                g_homing = 0;
-                g_enc_counts = (int64_t)g_enc_raw_prev;
-                g_target_deg = STARTUP_TARGET_OFFSET_DEG;
-                float p = COUNTS_TO_DEG(g_enc_counts);
-                if (p - g_target_deg >  180.0f) g_enc_counts -= (int64_t)ENCODER_COUNTS_REV;
-                if (p - g_target_deg < -180.0f) g_enc_counts += (int64_t)ENCODER_COUNTS_REV;
-            }
             if (g_scan_st == SCAN_MOVING) {
                 HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_SET);
                 g_scan_cur       = g_target_deg;
@@ -888,6 +1002,10 @@ static void MotorControl_Tick(uint8_t enc_ok)
             }
             if (!final_move)
                 tmc2209_motor_stop();
+            /* Событие «приехали» — только когда доводочные шаги отработаны:
+             * иначе кадр ушёл бы с позицией, которую вал ещё не занял. */
+            if (!final_move && !tmc2209_motor_is_moving())
+                Target_MarkReached();
             Control_Reset();
         }
 
@@ -904,22 +1022,17 @@ static void MotorControl_Tick(uint8_t enc_ok)
         }
 
     } else if (g_mode == MODE_OL) {
-        float err = (float)(g_target_deg - g_ol_pos);
+        float err = shortest_path_err((float)g_target_deg, (float)g_ol_pos);
 
         if (err > PID_DEADBAND_DEG || err < -PID_DEADBAND_DEG) {
+            Target_LeftDeadband();
             float v = Motion_Limit(err, err, 1);
             ApplyVelocity(v);
             if (g_scan_st == SCAN_MOVING && v != 0.0f)
                 HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
-            g_ol_pos += v;
+            g_ol_pos = wrap360(g_ol_pos + v);
         } else {
-            if (g_homing) {
-                g_homing = 0;
-                float p = COUNTS_TO_DEG(g_enc_raw_prev);
-                if (p - STARTUP_TARGET_OFFSET_DEG >  180.0f) p -= 360.0f;
-                if (p - STARTUP_TARGET_OFFSET_DEG < -180.0f) p += 360.0f;
-                g_ol_pos = p;
-            }
+            Target_MarkReached();
             if (g_scan_st == SCAN_MOVING) {
                 HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_SET);
                 g_scan_cur       = g_target_deg;
@@ -936,7 +1049,12 @@ static void MotorControl_Tick(uint8_t enc_ok)
 
 static float    s_stall_cmd_deg  = 0;  ///< Скомандованный путь за окно, град
 static float    s_stall_peak_deg = 0;  ///< Пик смещения по энкодеру от начала окна, град
-static int64_t  s_stall_ref;           ///< Позиция энкодера (counts) в начале окна
+/* Смещение от начала окна копится по-тиковыми дельтами, а не как разность с
+ * опорной точкой: координата кольцевая, и разность «сейчас минус начало окна»
+ * при ходе больше 180° стала бы неоднозначной. Дельта за тик ограничена
+ * фильтром выбросов (≤3°) — знак и величина всегда однозначны. */
+static int32_t  s_stall_net;           ///< Смещение вала от начала окна, отсчёты
+static uint32_t s_stall_prev;          ///< Позиция энкодера на прошлом валидном чтении
 static uint8_t  s_stall_have_ref = 0;
 static uint32_t s_stall_ticks    = 0;  ///< Длительность текущего окна, тиков
 static uint16_t s_stall_idle     = 0;  ///< Тиков подряд без команды движения
@@ -982,7 +1100,7 @@ static void Stall_Tick(uint8_t enc_ok)
         UART_Transmit((const uint8_t *)s_stall_msg, (uint16_t)strlen(s_stall_msg)) == 0)
         s_stall_msg[0] = '\0';
 
-    if (!g_enabled || g_mode != MODE_CL) {
+    if (!g_enabled || !g_hold || g_mode != MODE_CL) {
         Stall_Reset();
         return;
     }
@@ -991,9 +1109,12 @@ static void Stall_Tick(uint8_t enc_ok)
     if (enc_ok) {
         if (!s_stall_have_ref) {
             s_stall_have_ref = 1;
-            s_stall_ref      = g_enc_counts;
+            s_stall_prev     = g_enc_raw_prev;
+            s_stall_net      = 0;
         } else {
-            float net = COUNTS_TO_DEG(g_enc_counts - s_stall_ref);
+            s_stall_net += enc_wrap_delta(g_enc_raw_prev, s_stall_prev);
+            s_stall_prev = g_enc_raw_prev;
+            float net = COUNTS_TO_DEG(s_stall_net);
             if (net < 0) net = -net;
             if (net > s_stall_peak_deg) s_stall_peak_deg = net;
         }
@@ -1040,11 +1161,10 @@ static void Stall_Tick(uint8_t enc_ok)
     g_cont_dir = 0;
     g_scan_st  = SCAN_IDLE;
     g_scan_inf = 0;
-    g_homing   = 0;
     tmc2209_motor_stop();
     tmc2209_motor_set_enabled(0);
     Control_Reset();
-    g_target_deg = COUNTS_TO_DEG_D(g_enc_counts);
+    g_target_deg = Enc_Deg();
     HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
 
     snprintf(s_stall_msg, sizeof(s_stall_msg),
@@ -1059,8 +1179,6 @@ static void Stall_Tick(uint8_t enc_ok)
 
 /* --- Телеметрия --- */
 
-static uint32_t g_dropped_tx = 0;
-
 static void TransmitAll(const uint8_t *buf, uint16_t len)
 {
     if (UART_Transmit(buf, len) != 0) {
@@ -1070,21 +1188,51 @@ static void TransmitAll(const uint8_t *buf, uint16_t len)
     UART_Task();
 }
 
+/**
+ * @brief Выдача телеметрии: по периоду op= и/или по достижению цели (om=).
+ *
+ * Периодический источник работает как раньше (счётчик тиков до g_output_period,
+ * при debug=1 — не чаще OUTPUT_PERIOD_MS_DEBUG_MIN). Событийный источник даёт
+ * ровно один кадр на одну цель — в момент, когда вал встал в неё (тот же
+ * критерий, что и у SYNC_OUT=HIGH); такой кадр помечается полем ev:1.
+ * Событие защёлкнуто в g_telem_evt: если очередь TX занята, кадр уйдёт
+ * следующим свободным тиком, а не потеряется.
+ */
 static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 {
     static uint16_t cnt = 0;
-    if (g_output_period == 0) return;
     /* Даём коротким CLI-ответам уйти целой строкой, не перемешивая их с телеметрией. */
     if (UART_TxPending()) return;
-    /* При полной телеметрии (debug=1) используем не меньший период, чтобы длинные строки успевали по UART */
-    uint16_t period = g_telem_debug ? (g_output_period >= OUTPUT_PERIOD_MS_DEBUG_MIN ? g_output_period : OUTPUT_PERIOD_MS_DEBUG_MIN) : g_output_period;
-    if (++cnt < period) return;
-    cnt = 0;
+
+    uint8_t evt = g_telem_evt;
+    uint8_t periodic = 0;
+    if (g_telem_mode != TELEM_SRC_TARGET && g_output_period != 0) {
+        /* При полной телеметрии (debug=1) используем не меньший период, чтобы длинные строки успевали по UART */
+        uint16_t period = g_telem_debug ? (g_output_period >= OUTPUT_PERIOD_MS_DEBUG_MIN ? g_output_period : OUTPUT_PERIOD_MS_DEBUG_MIN) : g_output_period;
+        if (++cnt >= period) {
+            cnt = 0;
+            periodic = 1;
+        }
+    } else {
+        cnt = 0;
+    }
+    if (!periodic && !evt) return;
+    g_telem_evt = 0;
+
+    /* Кадр по достижению цели помечаем ev:1 — иначе в режиме om=2 его не
+     * отличить от периодического. В периодическом кадре поля нет вовсе. */
+    const char *ev = evt ? ",ev:1" : "";
 
     char buf[160];
     /* Позиция по режиму: в CL — последняя валидная позиция энкодера (не
-     * дёргается при единичном пропуске чтения), в OL — виртуальный счётчик. */
-    double deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
+     * дёргается при единичном пропуске чтения), в OL — виртуальный счётчик.
+     * В событийном кадре — снимок момента достижения цели (см. g_evt_deg). */
+    double deg = evt ? g_evt_deg
+                     : ((g_mode == MODE_CL) ? (double)Enc_Deg() : g_ol_pos);
+    double tp  = evt ? g_evt_tp : g_target_deg;
+    /* pe — ошибка по кратчайшему пути (то, что реально отрабатывает контур),
+     * а не арифметическая разность: у цели 10° и позиции 350° она равна +20°. */
+    double pe  = (double)shortest_path_err((float)tp, (float)deg);
     /* Приоритет: активная ошибка энкодера важнее защёлки stall (иначе новый
      * обрыв связи с энкодером скрылся бы за «старой» блокировкой вала). */
     uint8_t ec;
@@ -1098,14 +1246,15 @@ static void Telemetry_Tick(uint8_t enc_ok, BiSS_Status st)
 
     if (g_telem_debug)
         len = snprintf(buf, sizeof(buf),
-            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f,v:%.1f,a:%.1f,of:%lu,drp:%lu\r\n",
-            (double)deg, (double)g_target_deg, (double)(g_target_deg - deg),
+            "cp:%.2f,tp:%.2f,pe:%.2f,u:%.4f,m:%s,ec:%u,kp:%.4f,ki:%.4f,kd:%.4f,v:%.1f,a:%.1f,of:%lu,drp:%lu%s\r\n",
+            deg, tp, pe,
             (double)g_last_ctrl, (g_mode == MODE_CL) ? "cl" : "ol",
             (unsigned)ec, (double)g_pid.kp, (double)g_pid.ki, (double)g_pid.kd,
             (double)g_vmax_deg_s, (double)g_accel_deg_s2,
-            (unsigned long)g_outlier_cnt, (unsigned long)g_dropped_tx);
+            (unsigned long)g_outlier_cnt, (unsigned long)g_dropped_tx, ev);
     else
-        len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u\r\n", (double)deg, (unsigned)ec);
+        len = snprintf(buf, sizeof(buf), "cp:%.2f,ec:%u%s\r\n",
+                       (double)deg, (unsigned)ec, ev);
 
     if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;  /* snprintf усёк */
     if (len > 0) TransmitAll((uint8_t *)buf, (uint16_t)len);
@@ -1144,6 +1293,12 @@ static void SyncIn_Tick(void)
 static void Scan_Tick(void)
 {
     if (g_scan_st != SCAN_DELAY) return;
+    /* Удержание снято — скан заморожен: таймер delay не тикает, точка не
+     * меняется. Иначе плата уехала бы к следующей точке с обесточенными
+     * обмотками, то есть пропустила бы её, не сдвинув вал. Фронт SYNC_IN,
+     * пришедший за это время, остаётся во взведённом g_syncin_trig и
+     * сработает первым же тиком после hold=1. */
+    if (!g_hold) return;
 
     /* Переход к следующей точке: по таймеру delay (тик 1 кГц, считаем до
      * g_scan_delay_ms включительно) и/или фронту SYNC_IN — режим sync= */
@@ -1161,31 +1316,29 @@ static void Scan_Tick(void)
 
     double next;
     if (g_scan_inf != 0) {
-        next = g_scan_cur + (double)g_scan_inf * g_scan_step;
-        if (next > 1e7 || next < -1e7) {
-            double off = g_scan_cur;
-            g_scan_cur   -= off;
-            next         -= off;
-            g_ol_pos     -= off;
-            g_target_deg -= off;
-            g_enc_counts -= (int64_t)(off * (double)ENCODER_COUNTS_REV / 360.0
-                                      + (off >= 0 ? 0.5 : -0.5));
-        }
+        /* Бесконечный скан: угол просто заворачивается на нуле, границ нет */
+        next = wrap360(g_scan_cur + (double)g_scan_inf * g_scan_step);
     } else {
-        next = g_scan_cur + (float)g_scan_dir * g_scan_step;
-        if (g_scan_dir > 0 && next > g_scan_end) {
-            next = (g_scan_cur >= g_scan_end) ? (g_scan_end - g_scan_step) : g_scan_end;
+        /* Зигзаг в координате сектора u ∈ [0,span] — разворот на краях не
+         * зависит от того, пересекает ли сектор ноль. */
+        double u = g_scan_u + (double)g_scan_dir * g_scan_step;
+        if (g_scan_dir > 0 && u > g_scan_span) {
+            u = (g_scan_u >= g_scan_span) ? (g_scan_span - g_scan_step) : g_scan_span;
             g_scan_dir = -1;
-        } else if (g_scan_dir < 0 && next < g_scan_start) {
-            next = (g_scan_cur <= g_scan_start) ? (g_scan_start + g_scan_step) : g_scan_start;
+        } else if (g_scan_dir < 0 && u < 0.0) {
+            u = (g_scan_u <= 0.0) ? g_scan_step : 0.0;
             g_scan_dir = 1;
         }
+        g_scan_u = u;
+        next     = wrap360((double)g_scan_start + u);
     }
 
     g_target_deg = next;
     g_scan_cur   = next;
     g_scan_st    = SCAN_MOVING;
     g_scan_delay_cnt = 0;
+    /* Каждая точка скана — отдельная цель: один событийный кадр на точку */
+    Target_ResetReached();
     HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
     /* Профиль движения не сбрасываем: между точками скана рампа скорости
      * продолжается плавно, PID стартует с чистым интегралом */
@@ -1219,11 +1372,12 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_ENABLE:
         g_enabled  = 1;
         g_stall_latched = 0;       /* en — штатное восстановление после stall */
+        g_hold     = 1;            /* и снятое удержание: en возвращает в работу целиком */
         g_cont_dir = 0;
-        tmc2209_motor_set_enabled(1);
+        Drive_ApplyEnable();
         Control_Reset();
-        g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
-        g_homing     = 0;
+        g_target_deg = (g_mode == MODE_CL) ? (double)Enc_Deg() : g_ol_pos;
+        Target_ResetReached();
         SendResponse("ok:en\r\n");
         break;
 
@@ -1231,15 +1385,19 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_enabled  = 0;
         g_cont_dir = 0;
         tmc2209_motor_stop();
-        tmc2209_motor_set_enabled(0);
+        Drive_ApplyEnable();
         SendResponse("ok:dis\r\n");
         break;
 
     case CMD_SET_TARGET:
         g_cont_dir   = 0;
-        g_target_deg = cmd->target;
-        g_homing     = 0;
+        /* Любой угол приводится к [0,360): t=370 → 10, t=-30 → 330. Ход к
+         * цели — кратчайшим путём, поэтому «на оборот дальше» задать нельзя. */
+        g_target_deg = wrap360(cmd->target);
         PID_Reset(&g_pid);
+        /* Новая цель — новый событийный кадр (om=1/2), даже если вал уже стоит
+         * в ней: иначе хост ждал бы кадр, которого не будет. */
+        Target_ResetReached();
         /* g_vel_cmd не трогаем: смена цели на ходу продолжает рампу плавно */
         SendResponse("ok:t=%.2f\r\n", (double)g_target_deg);
         break;
@@ -1247,9 +1405,12 @@ static void ProcessCommand(const Cmd_Result *cmd)
     case CMD_CONTINUOUS:
         g_cont_dir = cmd->continuous_dir;
         g_scan_st  = SCAN_IDLE;
-        g_homing   = 0;
         PID_Reset(&g_pid);
-        if (!g_enabled) { g_enabled = 1; tmc2209_motor_set_enabled(1); }
+        if (!g_enabled || !g_hold) {
+            g_enabled = 1;
+            g_hold    = 1;         /* джог отменяет снятое удержание, иначе вал не тронется */
+            Drive_ApplyEnable();
+        }
         SendResponse("ok:t=%c\r\n", (g_cont_dir > 0) ? '+' : '-');
         break;
 
@@ -1273,6 +1434,14 @@ static void ProcessCommand(const Cmd_Result *cmd)
         SendResponse("ok:op=%u\r\n", (unsigned)g_output_period);
         break;
 
+    case CMD_SET_OUTPUT_MODE:
+        g_telem_mode = cmd->output_mode;   /* 0..2 гарантирует парсер */
+        /* Событие, взведённое в прежнем режиме, отменяем: хост, только что
+         * переключивший режим, ждёт кадр по своей следующей цели. */
+        g_telem_evt  = 0;
+        SendResponse("ok:om=%u\r\n", (unsigned)g_telem_mode);
+        break;
+
     case CMD_SET_DEBUG:
         g_telem_debug = cmd->debug;
         SendResponse("ok:debug=%u\r\n", (unsigned)g_telem_debug);
@@ -1282,36 +1451,47 @@ static void ProcessCommand(const Cmd_Result *cmd)
         float s = cmd->scan_start, e = cmd->scan_end, step = cmd->scan_step;
         uint16_t d = cmd->scan_delay_ms;
         int8_t inf = cmd->scan_infinite_dir;
-        /* Зигзаг: start < end, step > 0, delay > 0. Бесконечное: step > 0, delay > 0 */
         if (step <= 0 || d == 0) {
             SendResponse("err:scan\r\n");
             break;
         }
-        if (inf == 0 && s >= e) {
-            SendResponse("err:scan\r\n");
-            break;
+        /* Протяжённость сектора отсчитывается от start в сторону возрастания
+         * угла по кольцу, поэтому end < start — это сектор через ноль
+         * (scan=350,10 → span 20°). Вырожденный сектор (start и end — одна
+         * точка кольца, в т.ч. scan=0,360) отвергаем: полный круг задаётся
+         * бесконечным сканом scan=start,+,step,delay. */
+        float span = 0.0f;
+        if (inf == 0) {
+            span = (float)wrap360((double)e - (double)s);
+            if (span <= 0.0f) {
+                SendResponse("err:scan\r\n");
+                break;
+            }
         }
         g_cont_dir       = 0;
         g_scan_st        = SCAN_MOVING;
-        g_target_deg     = s;
-        g_scan_cur       = s;
-        g_scan_start     = s;
-        g_scan_end       = e;
+        g_scan_start     = (float)wrap360(s);
+        g_scan_span      = span;
+        g_scan_u         = 0;
+        g_scan_cur       = g_scan_start;
+        g_target_deg     = g_scan_start;
         g_scan_step      = step;
         g_scan_delay_ms  = d;
         g_scan_delay_cnt = 0;
         g_scan_dir       = inf ? inf : 1;
         g_scan_inf       = inf;
-        g_homing         = 0;
         PID_Reset(&g_pid);
+        Target_ResetReached();
         g_syncin_trig    = 0;  /* фронт, пришедший до старта скана, не считается */
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
+        /* Эхо — приведённые к [0,360) значения, как и у ok:t= */
         if (inf)
             SendResponse("ok:scan=%.2f,%c,%.2f,%u\r\n",
-                (double)s, (inf > 0) ? '+' : '-', (double)step, (unsigned)d);
+                (double)g_scan_start, (inf > 0) ? '+' : '-', (double)step, (unsigned)d);
         else
             SendResponse("ok:scan=%.2f,%.2f,%.2f,%u\r\n",
-                (double)s, (double)e, (double)step, (unsigned)d);
+                (double)g_scan_start, wrap360((double)g_scan_start + span),
+                (double)step, (unsigned)d);
         break;
     }
 
@@ -1320,9 +1500,9 @@ static void ProcessCommand(const Cmd_Result *cmd)
         g_scan_inf = 0;
         g_scan_st  = SCAN_IDLE;
         tmc2209_motor_stop();
-        g_target_deg = (g_mode == MODE_CL) ? COUNTS_TO_DEG_D(g_enc_counts) : g_ol_pos;
+        g_target_deg = (g_mode == MODE_CL) ? (double)Enc_Deg() : g_ol_pos;
         Control_Reset();
-        g_homing   = 0;
+        Target_ResetReached();
         g_syncin_trig = 0;
         HAL_GPIO_WritePin(SYNC_PORT, SYNC_PIN, GPIO_PIN_RESET);
         SendResponse("ok:stop\r\n");
@@ -1420,6 +1600,29 @@ static void ProcessCommand(const Cmd_Result *cmd)
         /* Результат придёт отдельной строкой enc:ok / err:enc через ~16 мс */
         break;
 
+    case CMD_SET_HOLD:
+        /* hold=0 — тихая пауза для замера: движение прекращаем, обмотки
+         * обесточиваем (шум драйвера пропадает, вал остаётся свободным).
+         * hold=1 — возврат в работу к той же цели: контур считает ошибку по
+         * свежему чтению энкодера, поэтому сползание вала за время без тока
+         * отрабатывается как обычная ошибка позиции.
+         * Ни цель, ни состояние скана, ни выданный по точке событийный кадр
+         * не меняются — следующая точка считается от прежней уставки. */
+        g_hold = cmd->hold;        /* 0|1 гарантирует парсер */
+        if (!g_hold)
+            tmc2209_motor_stop();
+        else
+            /* После подачи тока ротор притягивается к ближайшей фазе микрошага
+             * — просим доводку, чтобы вал сел в цель с той же точностью, что и
+             * при штатном приходе (снап отработает только при |err| > 0.02°). */
+            g_was_outside_db = 1;
+        /* PID и рампа с нуля: за паузу накопленный интеграл и скорость
+         * протухли — вал всё это время стоял без тока. */
+        Control_Reset();
+        Drive_ApplyEnable();
+        SendResponse("ok:hold=%u\r\n", (unsigned)g_hold);
+        break;
+
     case CMD_SET_SYNC:
         g_sync_mode = cmd->sync_mode;   /* 0..2 гарантирует парсер */
         SendResponse("ok:sync=%u\r\n", (unsigned)g_sync_mode);
@@ -1431,6 +1634,18 @@ static void ProcessCommand(const Cmd_Result *cmd)
             (unsigned)(HAL_GPIO_ReadPin(SYNC_IN_PORT, SYNC_IN_PIN) == GPIO_PIN_SET),
             (unsigned)(HAL_GPIO_ReadPin(SYNC_OUT_PORT, SYNC_OUT_PIN) == GPIO_PIN_SET),
             (unsigned long)g_syncin_edges);
+        break;
+
+    case CMD_GET_HOLD:
+        /* Запрос состояния, а не подтверждение команды, — поэтому без
+         * префикса ok:, как у sync. Хосту это нужно после переподключения:
+         * снятое удержание с виду ничем не отличается от штатного, а при
+         * hold=1 вал стоит под током. */
+        SendResponse("hold=%u\r\n", (unsigned)g_hold);
+        break;
+
+    case CMD_GET_OUTPUT_MODE:
+        SendResponse("om=%u\r\n", (unsigned)g_telem_mode);
         break;
 
     case CMD_UNKNOWN:

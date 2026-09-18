@@ -24,6 +24,10 @@ from .widgets.telemetry_plot import TelemetryPlot
 
 _LEFT_COLUMN_W = 460      # начальная и минимальная ширина левой колонки
 _SYNC_DELAY_MS = 150
+# Сообщение о перезапуске платы держим в строке состояния дольше обычных
+# предупреждений: пока оператор его не увидел, он считает состояние платы
+# прежним (в т.ч. обмотки обесточенными на вале, который уже под током).
+_REBOOT_NOTICE_MS = 12000
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +41,15 @@ class MainWindow(QMainWindow):
         self.client = DeviceClient(self.logger)
         self.state = DeviceStateModel(self)
         self._transport = None
+
+        # Один отложенный перезапрос состояния на все поводы (подключение,
+        # boot-баннер платы). Повторный вызов _schedule_sync() перезаводит
+        # таймер, а не добавляет вторую пачку команд: при подключении к
+        # плате, которая тут же присылает boot:, оба повода совпадают.
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(_SYNC_DELAY_MS)
+        self._sync_timer.timeout.connect(self._sync_device)
 
         self.header = HeaderBar()
         self.conn = ConnectionPanel(self.client.send)
@@ -128,18 +141,34 @@ class MainWindow(QMainWindow):
         self.client.telemetry.connect(self.state.apply_telemetry)
         self.client.telemetry.connect(self.plot.add_sample)
         self.client.mcfg.connect(self.motor.update_mcfg)
+        self.client.sync_status.connect(self.state.apply_sync)
         self.client.validation_error.connect(
             lambda m: self.statusBar().showMessage(f"⚠ {m}", 4000))
         self.client.response_timeout.connect(
             lambda c: self.statusBar().showMessage(f"⚠ Нет ответа на «{c}»", 4000))
         self.client.scan_sector.connect(self.dial.set_scan)
+        self.client.board_rebooted.connect(self._on_board_reboot)
 
         self.state.state_changed.connect(self._on_state_changed)
         self.client.param_confirmed.connect(
             lambda k, v: self.state.set_confirmed(k, v))
+        # Ответы на явные запросы состояния идут мимо охранников apply_state:
+        # те срабатывают только на смену подтверждённого значения (чтобы
+        # поток телеметрии не перебивал свежий выбор), а ответ на запрос
+        # чаще всего как раз повторяет прежнее значение — именно этим он и
+        # ценен (команда не дошла / плата перезагрузилась).
+        self.client.param_queried.connect(self._on_param_queried)
+        self.client.sync_status.connect(self.scan.apply_sync_reply)
         self.scan.sector_changed.connect(self.client.set_scan_sector)
         self.motor.antenna_config_changed.connect(self.dial.set_config)
         self.logger.message.connect(self.console.append_log)
+
+    def _on_param_queried(self, key: str, value) -> None:
+        """Ответ на запрос om / hold — виджет показывает то, что на плате."""
+        if key == "output_mode":
+            self.conn.apply_output_mode_reply(value)
+        elif key == "hold":
+            self.motor.apply_hold_reply(value)
 
     def _on_state_changed(self, st) -> None:
         self.header.apply_state(st)
@@ -147,19 +176,61 @@ class MainWindow(QMainWindow):
         self.conn.apply_state(st)
         self.motor.apply_state(st)
         self.pid.apply_state(st)
+        self.scan.apply_state(st)
 
     def _reset_readouts(self, clear_plot: bool) -> None:
         self.state.reset(keep_connection=self.client.is_connected)
         self.conn.reset()
         self.motor.reset()
         self.pid.reset()
+        self.scan.reset()
         self.dial.set_scan(None)
         if clear_plot:
             self.plot.clear()
 
     def _sync_device(self) -> None:
+        """Спрашивает у платы всё, чего нет в телеметрии.
+
+        После подключения плата могла перезагрузиться или работать с другим
+        хостом, поэтому om и hold запрашиваем так же, как mcfg и sync:
+        виджеты должны показывать её состояние, а не прошлый выбор
+        оператора (в случае hold это ещё и вопрос безопасности: под током
+        ли вал, за который собрались браться руками).
+        """
         if self.client.is_connected:
             self.client.send(P.cmd_mcfg())
+            self.client.send(P.cmd_sync_query())
+            self.client.send(P.cmd_output_mode_query())
+            self.client.send(P.cmd_hold_query())
+
+    def _schedule_sync(self) -> None:
+        """Ставит перезапрос состояния через _SYNC_DELAY_MS.
+
+        Задержка — та же, что была при подключении: плата после сброса
+        доделывает стартовую диагностику энкодера, и команда, посланная ей
+        встык за boot-баннером, пришлась бы на самый занятый участок старта.
+        """
+        self._sync_timer.start(_SYNC_DELAY_MS)
+
+    def _on_board_reboot(self, info: dict) -> None:
+        """Пришёл boot-баннер: плата поднялась заново, посреди сессии или нет.
+
+        Показания и подтверждения виджетов относятся к прошлому запуску
+        прошивки и теперь врут: hold вернулся в 1 (обмотки под током, даже
+        если оператор их обесточил), om/sync/токи — к значениям по умолчанию,
+        скан оборвался. Поэтому эхо гасим полностью (пусть лучше стоит «—»,
+        чем устаревшее значение) и заново спрашиваем у платы всё, чего нет в
+        телеметрии. График не чистим: по нему видно, что было перед сбросом.
+        """
+        reason = P.boot_reason_text(info.get("rst"))
+        fw = info.get("fw") or "?"
+        msg = (f"Плата перезапустилась: {reason}, fw={fw}. "
+               f"Состояние запрашивается заново.")
+        # ERR, а не INFO: в консоли строка красная, её трудно пропустить.
+        self.logger.log_err(msg)
+        self.statusBar().showMessage(f"⚠ {msg}", _REBOOT_NOTICE_MS)
+        self._reset_readouts(clear_plot=False)
+        self._schedule_sync()
 
     def _on_connect(self, mode: str, port: str) -> None:
         self._reset_readouts(clear_plot=True)
@@ -184,9 +255,10 @@ class MainWindow(QMainWindow):
             txt = f"Подключено: {desc}"
             self.conn.set_status(txt)
             self.statusBar().showMessage(txt, 4000)
-            QTimer.singleShot(_SYNC_DELAY_MS, self._sync_device)
+            self._schedule_sync()
             self._set_controls_enabled(True)
         else:
+            self._sync_timer.stop()
             self._reset_readouts(clear_plot=False)
             self.state.set_connection(False, "НЕ ПОДКЛЮЧЕНО")
             self.conn.set_status("Не подключено")

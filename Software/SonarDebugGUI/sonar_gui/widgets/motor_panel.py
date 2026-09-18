@@ -5,16 +5,24 @@ from typing import Callable
 
 from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDoubleSpinBox,
-                               QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QPushButton, QRadioButton, QSizePolicy,
-                               QSpinBox, QVBoxLayout)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox,
+                               QDoubleSpinBox, QGridLayout, QGroupBox,
+                               QHBoxLayout, QLabel, QPushButton, QRadioButton,
+                               QSizePolicy, QSpinBox, QVBoxLayout)
 
 from .. import protocol as P
 from ..device_state import DeviceState
 from ..metrics import METRICS, label
 from ..theme import COLORS, metric_color, mono_font, set_chip
 from .param_row import ParamRow
+
+# Состояние удержания вала (hold=N) словами — для эха подтверждения платы
+_HOLD_LABELS = {0: "обмотки обесточены", 1: "штатное удержание"}
+
+_HOLD_TOOLTIP = ("Удержание вала (hold=): снять — ток с обмоток снимается, "
+                 "драйвер перестаёт шуметь и вал свободен (тихая пауза для "
+                 "замера); вернуть — штатное удержание. В отличие от "
+                 "«Выключить», цель и точка скана сохраняются")
 
 
 class MotorPanel(QGroupBox):
@@ -37,12 +45,41 @@ class MotorPanel(QGroupBox):
         row1.addWidget(b_dis, 1)
         root.addLayout(row1)
 
+        # Удержание вала (hold=1/0). clicked — только щелчок пользователя:
+        # setChecked из apply_state сигнала не даёт, поэтому подтверждение
+        # платы не уходит обратно командой.
+        self._hold_confirmed: int | None = None   # последнее подтверждённое hold=
+        row_hold = QHBoxLayout()
+        self._hold = QCheckBox("Удержание вала (hold=1)")
+        self._hold.setToolTip(_HOLD_TOOLTIP)
+        self._hold.setChecked(True)          # прошивка стартует с hold=1
+        self._hold.clicked.connect(lambda on: self._send(P.cmd_hold(on)))
+        row_hold.addWidget(self._hold)
+        row_hold.addStretch(1)
+        self._hold_echo = QLabel()
+        self._hold_echo.setProperty("dim", "true")
+        self._hold_echo.setToolTip("Состояние удержания, подтверждённое платой")
+        row_hold.addWidget(self._hold_echo)
+        # Ручной перезапрос — как ⟳ у синхронизации в ScanPanel: hold= в
+        # телеметрии не приходит, а цена расхождения здесь самая высокая —
+        # флажок «обесточено» на вале, который на самом деле под током.
+        self._hold_refresh = QPushButton("⟳")
+        self._hold_refresh.setToolTip("Спросить плату, под током ли обмотки (hold)")
+        self._hold_refresh.setFixedWidth(28)
+        self._hold_refresh.clicked.connect(lambda: self._send(P.cmd_hold_query()))
+        row_hold.addWidget(self._hold_refresh)
+        root.addLayout(row_hold)
+        self._show_hold(None)
+
         row_t = QHBoxLayout()
         lbl_t = QLabel(label("tp"))
         lbl_t.setProperty("dim", "true")
         lbl_t.setToolTip(METRICS["tp"].tooltip)
         self._target = QDoubleSpinBox()
-        self._target.setRange(-1_000_000.0, 1_000_000.0)
+        # Координата кольцевая: цель живёт в [0,360), на краях спинбокс
+        # заворачивается (359.99 -> 0.00), как сама уставка в прошивке.
+        self._target.setRange(0.0, 360.0)
+        self._target.setWrapping(True)
         self._target.setDecimals(2)
         self._target.setValue(0.0)
         self._target.setSizePolicy(QSizePolicy.Policy.Expanding,
@@ -289,13 +326,26 @@ class MotorPanel(QGroupBox):
             self._send(P.cmd_speed(self._speed.value()))
             self._jog_restored = True
 
+    def _show_hold(self, hold: int | None) -> None:
+        """Эхо подтверждённого платой удержания (ok:hold=N, а также ok:en и
+        джог — они сами возвращают hold=1). Расхождение с флажком
+        подсвечивается, как несовпадение в ParamRow."""
+        self._hold_echo.setText(_HOLD_LABELS.get(hold, "—"))
+        if hold is None:
+            self._hold_echo.setStyleSheet("")
+        elif bool(hold) != self._hold.isChecked():
+            self._hold_echo.setStyleSheet(f"color: {COLORS['mismatch']};")
+        else:
+            self._hold_echo.setStyleSheet(f"color: {COLORS['text_dim']};")
+
     def apply_state(self, st: DeviceState) -> None:
         self._row_v.set_confirmed(st.v)
         self._row_a.set_confirmed(st.a)
         if st.tp is not None:
             txt = f"= {st.tp:.2f}°"
             self._echo_tp.setText(txt)
-            if abs(self._target.value() - st.tp) > 0.05:
+            # Сверка по кольцу: 360.00 в поле и tp=0.00 — это одна точка
+            if abs(P.wrap180(self._target.value() - st.tp)) > 0.05:
                 self._echo_tp.setStyleSheet(f"color: {COLORS['mismatch']};")
             else:
                 self._echo_tp.setStyleSheet(f"color: {COLORS['text_dim']};")
@@ -304,6 +354,15 @@ class MotorPanel(QGroupBox):
             self._echo_tp.setStyleSheet("")
 
         self._pe_val.setText("—" if st.pe is None else f"{st.pe:.2f}°")
+
+        # Флажок подтягиваем только на смену подтверждённого значения (см.
+        # ConnectionPanel.apply_state): иначе поток телеметрии возвращал бы
+        # его назад, пока ответ ok:hold= ещё не пришёл.
+        if st.hold != self._hold_confirmed:
+            self._hold_confirmed = st.hold
+            if st.hold is not None:
+                self._hold.setChecked(bool(st.hold))
+        self._show_hold(st.hold)
 
         if st.drp is not None:
             self._drp.setText(f"{METRICS['drp'].short} {st.drp}")
@@ -316,6 +375,22 @@ class MotorPanel(QGroupBox):
         else:
             set_chip(self._ec, "off", f"{METRICS['ec'].short} —")
 
+    def apply_hold_reply(self, hold: int | None) -> None:
+        """Ответ на явный запрос `hold` (строка hold=N, без префикса ok:)
+        — авторитетен: флажок становится тем, что фактически на плате.
+
+        Охранник apply_state срабатывает только на смену подтверждённого
+        значения, а здесь цена ошибки высока: после переподключения
+        (плата могла перезагрузиться и вернуть hold=1) человек не должен
+        считать обмотки обесточенными, берясь за вал под током.
+        """
+        if hold is None:
+            return
+        self._hold_confirmed = hold
+        # setChecked не даёт clicked — команда hold= обратно не уходит.
+        self._hold.setChecked(bool(hold))
+        self._show_hold(hold)
+
     def reset(self) -> None:
         self._row_v.reset()
         self._row_a.reset()
@@ -325,6 +400,8 @@ class MotorPanel(QGroupBox):
         self._drp.setText(f"{METRICS['drp'].short} —")
         set_chip(self._ec, "off", f"{METRICS['ec'].short} —")
         self._cfg.setText("mode=?  run=?  hold=?  microsteps=?  ready=?")
+        self._hold_confirmed = None
+        self._show_hold(None)
 
     def _go(self) -> None:
         self._send(P.cmd_target(self._target.value()))
@@ -363,6 +440,7 @@ class MotorPanel(QGroupBox):
         for w in self.findChildren(QRadioButton):
             w.setEnabled(on)
         self._mstep.setEnabled(on)                # микрошаг драйвера
+        self._hold.setEnabled(on)                 # удержание вала (hold=)
         # Калибровка антенны — чисто локальная настройка GUI, в прошивку не
         # уходит, поэтому остаётся доступной независимо от подключения.
         self._ant_scale.setEnabled(True)

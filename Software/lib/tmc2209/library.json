@@ -1,0 +1,22 @@
+{
+  "name": "tmc2209",
+  "version": "1.0.0",
+  "description": "Драйвер шагового двигателя TMC2209 по UART (PDN_UART): ядро протокола, порт STM32 HAL и фасад управления мотором",
+  "keywords": "tmc2209, stepper, motor, driver, uart, stm32cube, hal",
+  "license": "MIT",
+  "frameworks": ["stm32cube"],
+  "platforms": ["ststm32"],
+  "headers": [
+    "tmc2209/tmc2209.h",
+    "tmc2209/tmc2209_types.h",
+    "tmc2209/tmc2209_regs.h",
+    "tmc2209/tmc2209_port.h",
+    "tmc2209/tmc2209_port_stm32_hal.h",
+    "tmc2209/tmc2209_motor.h"
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": ["-Wall", "-Wextra"]
+  }
+}

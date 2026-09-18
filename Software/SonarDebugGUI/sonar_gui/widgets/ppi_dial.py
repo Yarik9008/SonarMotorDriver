@@ -269,9 +269,13 @@ class PPIDialWidget(QWidget):
                        Qt.AlignCenter, _LABEL_TEXTS[j])
 
     def _draw_scan(self, p, cx, cy, r) -> None:
+        from .. import protocol as P
+        # Сектор направленный: отсчитывается от start в сторону возрастания
+        # угла по кольцу. Сортировать концы нельзя — у сектора через ноль
+        # (350,10) это нарисовало бы дополнение, 340° вместо 20°.
         a1 = self.antenna_angle(self._scan[0])
-        a2 = self.antenna_angle(self._scan[1])
-        lo, hi = (a1, a2) if a1 <= a2 else (a2, a1)
+        sweep = self._sign * P.scan_span(self._scan[0], self._scan[1]) * self._scale
+        lo, hi = (a1, a1 + sweep) if sweep >= 0 else (a1 + sweep, a1)
         rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
         start16 = int(round((90 - hi) * 16))
         span16 = int(round((hi - lo) * 16))
@@ -359,8 +363,8 @@ class PPIDialWidget(QWidget):
             p.setPen(self._pen_faint)
             p.drawText(rect, Qt.AlignCenter, "— °")
             return
-        rev = int(abs(cp) // 360)
-        small = f"{cp:.2f}° · {rev} об."
+        # Счётчика оборотов нет: координата кольцевая, cp всегда в [0,360)
+        small = f"{cp:.2f}°"
         p.setFont(self._f_mono_small)
         p.setPen(self._pen_label)
         p.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, small)

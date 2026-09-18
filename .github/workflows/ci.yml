@@ -1,0 +1,138 @@
+# =============================================================================
+# SonarMotorDriver — непрерывная интеграция
+# =============================================================================
+# Две независимые проверки:
+#   * firmware — все четыре прошивки собираются PlatformIO;
+#   * python   — юнит-тесты протокола и конформанс-тест на Python-модели
+#                прошивки (без железа и без COM-порта).
+# Железо в CI недоступно, поэтому всё, что требует платы, сюда не выносится.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Токен нужен только для выгрузки исходников.
+permissions:
+  contents: read
+
+# Новый пуш в ту же ветку отменяет предыдущий незавершённый прогон: держать
+# очередь из устаревших сборок смысла нет.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: "Сборка · ${{ matrix.title }}"
+    runs-on: ubuntu-latest
+    strategy:
+      # Отключено намеренно: падение одной прошивки не должно скрывать
+      # результат остальных трёх.
+      fail-fast: false
+      matrix:
+        include:
+          - title: FW_SonarMotorDriver
+            project: "Software/FW_SonarMotorDriver"
+          - title: FW_SonarMotorDriver_Sim
+            project: "Software/FW_SonarMotorDriver_Sim"
+          - title: FW_Test_TMC2209
+            project: "Software/FW_Test_TMC2209"
+          - title: FW_AS5047P_STM32F103C8
+            project: "Software/FW_AS5047P_STM32F103C8"
+    steps:
+      - name: Выгрузка исходников
+        uses: actions/checkout@v4
+
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Кэшируется каталог загрузок PlatformIO, а не установленные пакеты:
+      # после обновления PlatformIO Core распакованная toolchain может оказаться
+      # несовместимой с новой версией ядра, а архивы в .cache переиспользуются
+      # всегда. Это же рекомендует документация PlatformIO.
+      # Ключ завязан на platformio.ini: смена платформы или фреймворка
+      # инвалидирует кэш.
+      - name: Кэш PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.cache/pip
+          key: "${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}"
+          restore-keys: |
+            ${{ runner.os }}-pio-
+
+      - name: Установка PlatformIO Core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade platformio
+          pio --version
+
+      - name: Сборка прошивки
+        working-directory: "${{ matrix.project }}"
+        run: pio run
+
+  python:
+    name: "Python · тесты протокола"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Относится только к шагам run; actions/checkout всё равно работает
+        # от корня репозитория.
+        working-directory: "Software/SonarDebugGUI"
+    steps:
+      - name: Выгрузка исходников
+        uses: actions/checkout@v4
+
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # requirements.txt целиком не ставится намеренно: PySide6 и pyqtgraph
+      # тянут графический стек, которого на раннере нет, а проверяемые модули
+      # (protocol, simulator) от Qt не зависят.
+      #
+      # pyserial для этих двух шагов не обязателен: его импорт в protocol_test.py
+      # обёрнут в try/except (блок `try: import serial` в шапке файла — без
+      # пакета serial и list_ports зануляются, а проверка переезжает в main() и
+      # касается только работы с реальным портом), режим --sim порт не
+      # открывает, а юнит-тесты pyserial не импортируют вовсе. Проверено
+      # запуском обоих шагов с принудительно заблокированным импортом serial:
+      # 169 тестов OK и 184/184 конформанса — столько же, сколько с пакетом
+      # (замер 2026-09-18, локально; числа сверяются командами из README
+      # корня репозитория, раздел «Тесты (без железа)»).
+      # Пакет ставится, чтобы CI шёл тем же путём импорта, что и машина
+      # разработчика, — иначе аварийная ветка try/except стала бы единственной
+      # проверяемой, а основная не проверялась бы нигде.
+      - name: Установка зависимостей
+        run: python -m pip install --upgrade pyserial
+
+      # Настоящий парсер команд прошивки (Software/lib/sonar_proto/src/cmd_parser.c)
+      # собирается хостовым gcc и прогоняется на корпусе строк — так проверяется
+      # именно тот код, который уходит на плату, а не его пересказ регулярками.
+      # Шаг отдельный, хотя то же самое делает и юнит-тест
+      # tests/test_cmd_parser_host.py: без компилятора тот молча пропускается, а
+      # здесь gcc есть штатно, и его пропажа обязана валить прогон, а не тихо
+      # снимать проверку. Путь относительный: рабочий каталог шагов —
+      # Software/SonarDebugGUI (см. defaults выше).
+      - name: Хостовый прогон парсера прошивки
+        run: |
+          gcc --version
+          python ../lib/sonar_proto/tools/run_cmd_parser_probe.py
+
+      # Каталог tests лежит внутри Software/SonarDebugGUI; запуск через
+      # `python -m` кладёт рабочий каталог в sys.path, поэтому пакет sonar_gui
+      # импортируется тестами без установки. Ключ -t не задаётся сознательно:
+      # с ним unittest требует tests/__init__.py.
+      - name: Юнит-тесты
+        run: python -m unittest discover -s tests -v
+
+      # Конформанс-тест гоняет протокол против Python-модели прошивки,
+      # реального COM-порта не требует.
+      - name: Конформанс-тест протокола на симуляторе
+        run: python protocol_test.py --sim

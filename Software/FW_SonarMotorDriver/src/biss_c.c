@@ -74,7 +74,9 @@ static BiSS_Status biss_parse_frame(const uint8_t *rx, BiSS_Reading *out)
 
     bp += 2;
 
-    if (bp + BISS_SCD_BITS > total_bits) {
+    /* BISS_SCD_BITS без приведения делает сравнение беззнаковым (макрос с U),
+       а bp и total_bits — int; тип сравнения приводим к int, как ниже в цикле. */
+    if (bp + (int)BISS_SCD_BITS > total_bits) {
         out->status = BISS_ERR_NO_RESPONSE;
         return BISS_ERR_NO_RESPONSE;
     }

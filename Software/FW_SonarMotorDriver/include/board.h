@@ -203,10 +203,12 @@ void Delay_ms(uint32_t ms);
 #define OUTPUT_PERIOD_MS_DEFAULT 4U    /* Период (мс), 0 = отключить; 4 мс = 250 Гц */
 #define OUTPUT_PERIOD_MS_DEBUG_MIN 20U  /* При debug=1 период не меньше этого (мс), чтобы полные сообщения успевали по UART */
 #define TELEMETRY_DEBUG_DEFAULT 0       /* 0 = cp,ec; 1 = полная телеметрия */
+#define TELEMETRY_MODE_DEFAULT  0       /* Источник выдачи (om=): 0 = период op, 1 = достижение цели, 2 = оба */
 
 /* Состав телеметрии:
  * debug=0 (обычная): cp(float), ec(uint8_t)
- * debug=1 (полная):  cp(float), tp(float), pe(float), u(float), m("cl"|"ol"), ec(uint8_t), kp(float), ki(float), kd(float) 
+ * debug=1 (полная):  cp(float), tp(float), pe(float), u(float), m("cl"|"ol"), ec(uint8_t), kp(float), ki(float), kd(float)
+ * Кадр, выданный по достижению цели (om=1/2), дополнительно помечается ev:1.
  * */
 
 /**

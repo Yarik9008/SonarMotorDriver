@@ -1,0 +1,19 @@
+{
+  "name": "sonar_proto",
+  "version": "1.0.0",
+  "description": "Общий слой командного протокола сонара: транспорт UART (USART1+USART3, DMA/IT), сборка строк из кольцевого буфера и парсер текстовых команд",
+  "keywords": "sonar, protocol, uart, parser, stm32cube, hal",
+  "license": "MIT",
+  "frameworks": ["stm32cube"],
+  "platforms": ["ststm32"],
+  "headers": [
+    "cmd_parser.h",
+    "line_reader.h",
+    "uart.h"
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": ["-Wall", "-Wextra"]
+  }
+}
