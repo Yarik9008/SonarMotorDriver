@@ -42,14 +42,26 @@
 #define SAMPLE_RATE_HZ   2000U  /* частота опроса датчика, Гц */
 #endif
 #ifndef FILTER_BW_HZ
-#define FILTER_BW_HZ     50.0f  /* полоса следящего контура, Гц */
+#define FILTER_BW_HZ     10.0f  /* полоса следящего контура, Гц */
 #endif
 #ifndef FILTER_DAMPING
 #define FILTER_DAMPING   1.0f   /* zeta: 1.0 — критическое демпфирование */
 #endif
+#ifndef LOG_PLOT
+#define LOG_PLOT         1      /* 1 — Arduino Serial Plotter, 0 — текстовый лог */
+#endif
 
+#if LOG_PLOT
+#define PRINT_PERIOD_MS  20U    /* 50 Гц — график в Serial Plotter без пропусков */
+#else
 #define PRINT_PERIOD_MS  100U   /* период печати строки измерения */
 #define DIAG_PERIOD_MS   2000U  /* период печати диагностики (DIAAGC/MAG) */
+#endif
+
+/* Гистерезис печати flt: не менять десятую, пока угол не ушёл дальше
+   чем 0.05° (полшага) + 0.04°. Иначе остаточный шум контура (~0.014° СКО)
+   на границе 180.05 даёт пилу 180.0↔180.1 — это не датчик, а квантование. */
+#define PLOT_HYST_CDEG   4
 
 #define ENC_CS_PORT      GPIOA
 #define ENC_CS_PIN       GPIO_PIN_4
@@ -97,6 +109,11 @@ static volatile uint16_t diag_mag;
 static volatile uint8_t  diag_status;
 static volatile uint16_t last_errfl;
 static volatile uint8_t  last_read_status;
+static volatile uint16_t last_raw;          /* последний сырой угол, для графика */
+#if LOG_PLOT
+static int32_t plot_flt_tenth;              /* последняя напечатанная десятая flt */
+static uint8_t plot_flt_have;
+#endif
 
 /* Длительность такта опроса по счётчику тактов ядра (DWT): подтверждает,
    что обмен + фильтр укладываются в период дискретизации. */
@@ -111,17 +128,28 @@ static void MX_TIM2_Init(void);
 #if LOG_USE_UART
 static void MX_USART1_UART_Init(void);
 #endif
+#if !LOG_PLOT
 static void print_header(void);
 static void print_diagnostics(void);
+static uint32_t isqrt64(uint64_t v);
+#endif
+#if LOG_PLOT
+static void print_tenth(int32_t t);
+static int32_t to_tenth(int32_t x100);
+static int32_t sticky_tenth(int32_t x100, int32_t *last, uint8_t *have);
+#endif
+static int32_t unwrapped_cdeg(float theta, int32_t turns);
+static int32_t wrap_round(float d);
 static void stats_reset(void);
 static void cycle_counter_init(void);
-static uint32_t isqrt64(uint64_t v);
 void Error_Handler(void);
 
 int main(void)
 {
     uint32_t next_print = 0;
+#if !LOG_PLOT
     uint32_t next_diag = 0;
+#endif
 
     HAL_Init();
     SystemClock_Config();
@@ -161,8 +189,10 @@ int main(void)
     HAL_Delay(10);                                          /* пауза после подачи питания */
     (void)as5047p_read(&encoder, AS5047P_REG_ERRFL, NULL);  /* холостое чтение: чистим ERRFL */
 
+#if !LOG_PLOT
     print_header();
     print_diagnostics();
+#endif
 
     /* с этого момента SPI принадлежит прерыванию TIM2 */
     if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK) {
@@ -173,13 +203,17 @@ int main(void)
         uint32_t now = HAL_GetTick();
 
         if ((int32_t)(now - next_print) >= 0) {
-            win_stats_t    w;
             angle_filter_t snap;
-            uint32_t       cdeg;
+            uint16_t       raw;
+            int32_t        flt_cdeg;
+            int32_t        raw_cdeg;
+#if !LOG_PLOT
             int32_t        cdeg_s;
+            win_stats_t    w;
             uint32_t       rms_x100 = 0;
-            char           sign;
             uint32_t       w_abs;
+            char           sign;
+#endif
 
             next_print = now + PRINT_PERIOD_MS;
 
@@ -188,14 +222,42 @@ int main(void)
                делаем только копирование — пересчёт в градусы (программная
                плавающая точка) уже на копии, чтобы не добавлять джиттер такту. */
             __disable_irq();
-            w    = stats;
+#if !LOG_PLOT
+            w = stats;
+#endif
             snap = filter;
+            raw  = last_raw;
             stats_reset();
             __enable_irq();
 
-            cdeg   = angle_filter_centideg(&snap);
-            cdeg_s = angle_filter_centideg_per_s(&snap);
+            /* В сотые доли из float, без округления theta до целого отсчёта:
+               иначе ±0.5 count (±0.011°) лишний раз толкает значение к границе. */
+            {
+                float e = (float)raw - snap.theta;
 
+                if (e >= (float)ANGLE_FILTER_HALF) {
+                    e -= (float)ANGLE_FILTER_COUNTS;
+                } else if (e < -(float)ANGLE_FILTER_HALF) {
+                    e += (float)ANGLE_FILTER_COUNTS;
+                }
+                flt_cdeg = unwrapped_cdeg(snap.theta, snap.turns);
+                raw_cdeg = unwrapped_cdeg(snap.theta + e, snap.turns);
+            }
+#if !LOG_PLOT
+            cdeg_s   = angle_filter_centideg_per_s(&snap);
+#endif
+
+#if LOG_PLOT
+            /* Arduino Serial Plotter: label:value через запятую, без текста.
+               Угол развёрнут (без скачка 360→0), чтобы график не рвался.
+               raw — ближайшая десятая (виден шум датчика);
+               flt — с гистерезисом, чтобы округление не пилило на границе. */
+            printf("raw:");
+            print_tenth(to_tenth(raw_cdeg));
+            printf(",flt:");
+            print_tenth(sticky_tenth(flt_cdeg, &plot_flt_tenth, &plot_flt_have));
+            printf("\r\n");
+#else
             if (w.n > 0U) {
                 /* СКО невязки (raw - прогноз) ~ шум самого датчика: прогноз
                    почти не шумит, полоса контура много уже частоты опроса.
@@ -206,29 +268,84 @@ int main(void)
             sign  = (cdeg_s < 0) ? '-' : '+';
             w_abs = (uint32_t)((cdeg_s < 0) ? -cdeg_s : cdeg_s);
 
-            printf("[%8lu ms] flt=%3lu.%02lu deg  w=%c%lu.%02lu deg/s  "
+            printf("[%8lu ms] raw=%3ld.%02lu flt=%3ld.%02lu deg  w=%c%lu.%02lu deg/s  "
                    "p-p raw/flt=%ld/%ld  rms=%lu.%02lu  n=%lu miss=%lu gate=%lu\r\n",
                    (unsigned long)now,
-                   (unsigned long)(cdeg / 100UL), (unsigned long)(cdeg % 100UL),
+                   (long)(raw_cdeg / 100), (unsigned long)((uint32_t)((raw_cdeg < 0 ? -raw_cdeg : raw_cdeg) % 100)),
+                   (long)(flt_cdeg / 100), (unsigned long)((uint32_t)((flt_cdeg < 0 ? -flt_cdeg : flt_cdeg) % 100)),
                    sign, (unsigned long)(w_abs / 100UL), (unsigned long)(w_abs % 100UL),
                    (long)(w.n ? (w.raw_max - w.raw_min) : 0),
                    (long)(w.n ? (w.flt_max - w.flt_min) : 0),
                    (unsigned long)(rms_x100 / 100UL), (unsigned long)(rms_x100 % 100UL),
                    (unsigned long)w.n, (unsigned long)w.miss, (unsigned long)w.gated);
+#endif
 
             HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
         }
 
+#if !LOG_PLOT
         if ((int32_t)(now - next_diag) >= 0) {
             next_diag = now + DIAG_PERIOD_MS;
             print_diagnostics();
         }
+#endif
     }
 }
 
 /* ------------------------------------------------------------------------ */
 /*  Опрос датчика: строго равномерный такт                                   */
 /* ------------------------------------------------------------------------ */
+
+#if LOG_PLOT
+/** Печать уже готовой десятой доли градуса: 1801 → 180.1 */
+static void print_tenth(int32_t t)
+{
+    uint32_t a;
+
+    if (t < 0) {
+        a = (uint32_t)(-t);
+        printf("-%lu.%lu", (unsigned long)(a / 10UL), (unsigned long)(a % 10UL));
+    } else {
+        a = (uint32_t)t;
+        printf("%lu.%lu", (unsigned long)(a / 10UL), (unsigned long)(a % 10UL));
+    }
+}
+
+/** Сотые → ближайшая десятая. */
+static int32_t to_tenth(int32_t x100)
+{
+    return (x100 >= 0) ? (x100 + 5) / 10 : (x100 - 5) / 10;
+}
+
+/**
+ * Округление с гистерезисом: пока значение держится около уже напечатанной
+ * десятой, не переключаемся. Смена — только если ушли дальше чем
+ * полшага (0.05°) плюс PLOT_HYST_CDEG.
+ */
+static int32_t sticky_tenth(int32_t x100, int32_t *last, uint8_t *have)
+{
+    int32_t nearest = to_tenth(x100);
+    int32_t d;
+
+    if (*have == 0U) {
+        *last = nearest;
+        *have = 1U;
+        return nearest;
+    }
+    d = x100 - (*last * 10);
+    if (d > (5 + PLOT_HYST_CDEG) || d < -(5 + PLOT_HYST_CDEG)) {
+        *last = nearest;
+    }
+    return *last;
+}
+#endif /* LOG_PLOT */
+
+/** Развёрнутый угол в сотых градуса прямо из float, без округления до отсчёта. */
+static int32_t unwrapped_cdeg(float theta, int32_t turns)
+{
+    float c = ((float)turns * (float)ANGLE_FILTER_COUNTS + theta) * 2.197265625f;
+    return (int32_t)(c >= 0.0f ? c + 0.5f : c - 0.5f);
+}
 
 /** Приведение разности углов к диапазону +-полоборота, в отсчётах. */
 static int32_t wrap_round(float d)
@@ -297,6 +414,7 @@ static void sample_tick(void)
     if (st == AS5047P_OK) {
         uint32_t gated_before = filter.n_gated;
 
+        last_raw = raw;
         angle_filter_update(&filter, raw);
         if (filter.n_gated != gated_before) {
             /* Отсчёт забракован как выброс — в оценку шума он не идёт,
@@ -365,6 +483,7 @@ static void stats_reset(void)
     stats.have_ref = 0U;
 }
 
+#if !LOG_PLOT
 /** Целочисленный квадратный корень (побитовый, «в столбик»), без math.h. */
 static uint32_t isqrt64(uint64_t v)
 {
@@ -384,11 +503,13 @@ static uint32_t isqrt64(uint64_t v)
     }
     return (uint32_t)(root >> 1);
 }
+#endif /* !LOG_PLOT */
 
 /* ------------------------------------------------------------------------ */
 /*  Печать                                                                   */
 /* ------------------------------------------------------------------------ */
 
+#if !LOG_PLOT
 /** Шапка: параметры такта и настройки фильтра — чтобы лог был самодостаточен. */
 static void print_header(void)
 {
@@ -508,6 +629,7 @@ static void print_diagnostics(void)
         last_read_status = (uint8_t)AS5047P_OK;
     }
 }
+#endif /* !LOG_PLOT */
 
 /* ------------------------------------------------------------------------ */
 /*  Инициализация периферии                                                  */
