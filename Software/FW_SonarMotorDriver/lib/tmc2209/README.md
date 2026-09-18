@@ -19,7 +19,7 @@
 В `platformio.ini` прошивки:
 
 ```ini
-lib_deps = symlink://../lib/tmc2209
+lib_deps = symlink://../FW_SonarMotorDriver/lib/tmc2209
 ; фасаду мотора (tmc2209_motor.c) дополнительно нужен флаг:
 build_flags = -DTMC2209_USE_MOTOR_FACADE
 ```
@@ -106,5 +106,5 @@ MSP на всю программу один, а UART у прошивки не о
 ## Документация API
 
 Подробное описание функций и примеры — в
-[`FW_Test_TMC2209/docs/TMC2209_API.md`](../../FW_Test_TMC2209/docs/TMC2209_API.md)
+[`FW_Test_TMC2209/docs/TMC2209_API.md`](../../../FW_Test_TMC2209/docs/TMC2209_API.md)
 и `FW_Test_TMC2209/docs/examples/`.

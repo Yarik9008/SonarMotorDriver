@@ -31,10 +31,10 @@ from _support import P, REPO_ROOT, S                   # noqa: E402
 
 BOARD_H = os.path.join(REPO_ROOT, "Software", "FW_SonarMotorDriver",
                        "include", "board.h")
-CMD_PARSER_C = os.path.join(REPO_ROOT, "Software", "lib", "sonar_proto",
-                            "src", "cmd_parser.c")
-TMC2209_C = os.path.join(REPO_ROOT, "Software", "lib", "tmc2209",
-                         "src", "tmc2209.c")
+CMD_PARSER_C = os.path.join(REPO_ROOT, "Software", "FW_SonarMotorDriver",
+                            "lib", "sonar_proto", "src", "cmd_parser.c")
+TMC2209_C = os.path.join(REPO_ROOT, "Software", "FW_SonarMotorDriver",
+                         "lib", "tmc2209", "src", "tmc2209.c")
 
 # Что сознательно НЕ сверяется с board.h и почему:
 #  - OP_MIN/OP_MAX (0..65535) — не #define, а разрядность поля uint16_t

@@ -144,7 +144,9 @@ SYNC_IN (PB12) — вход с pull-down: фронт LOW→HIGH, импульс 
 
 ## Проверить связь
 
-Имитатор [FW_SonarMotorDriver_Sim](../Software/FW_SonarMotorDriver_Sim/) по UART
-неотличим от боевой прошивки — удобно отлаживать хост без мотора и энкодера.
+Имитатор — это та же прошивка, собранная как
+[`pio run -e sim`](../Software/FW_SonarMotorDriver/README.md#имитатор-envsim):
+по UART он неотличим от боевой (кроме суффикса `-sim` в boot-баннере), но не
+требует мотора и энкодера — удобно отлаживать хост без железа.
 Готовые клиенты: [SonarDebugGUI](../Software/SonarDebugGUI/) и скрипт
 [tools/test_commands.py](../Software/FW_SonarMotorDriver/tools/test_commands.py).

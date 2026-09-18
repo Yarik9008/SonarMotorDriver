@@ -28,19 +28,26 @@ jobs:
     name: "Сборка · ${{ matrix.title }}"
     runs-on: ubuntu-latest
     strategy:
-      # Отключено намеренно: падение одной прошивки не должно скрывать
-      # результат остальных трёх.
+      # Отключено намеренно: падение одной сборки не должно скрывать
+      # результат остальных.
       fail-fast: false
       matrix:
         include:
-          - title: FW_SonarMotorDriver
+          # Боевая прошивка и имитатор — один проект, два окружения PlatformIO:
+          # различаются только слоем железа (biss_c.c + lib/tmc2209 против
+          # sim_backend.c), логика у них общая.
+          - title: FW_SonarMotorDriver (hw)
             project: "Software/FW_SonarMotorDriver"
-          - title: FW_SonarMotorDriver_Sim
-            project: "Software/FW_SonarMotorDriver_Sim"
+            args: "-e hw"
+          - title: FW_SonarMotorDriver (sim)
+            project: "Software/FW_SonarMotorDriver"
+            args: "-e sim"
           - title: FW_Test_TMC2209
             project: "Software/FW_Test_TMC2209"
+            args: ""
           - title: FW_AS5047P_STM32F103C8
             project: "Software/FW_AS5047P_STM32F103C8"
+            args: ""
     steps:
       - name: Выгрузка исходников
         uses: actions/checkout@v4
@@ -74,7 +81,7 @@ jobs:
 
       - name: Сборка прошивки
         working-directory: "${{ matrix.project }}"
-        run: pio run
+        run: pio run ${{ matrix.args }}
 
   python:
     name: "Python · тесты протокола"
@@ -112,7 +119,8 @@ jobs:
       - name: Установка зависимостей
         run: python -m pip install --upgrade pyserial
 
-      # Настоящий парсер команд прошивки (Software/lib/sonar_proto/src/cmd_parser.c)
+      # Настоящий парсер команд прошивки
+      # (Software/FW_SonarMotorDriver/lib/sonar_proto/src/cmd_parser.c)
       # собирается хостовым gcc и прогоняется на корпусе строк — так проверяется
       # именно тот код, который уходит на плату, а не его пересказ регулярками.
       # Шаг отдельный, хотя то же самое делает и юнит-тест
@@ -123,7 +131,7 @@ jobs:
       - name: Хостовый прогон парсера прошивки
         run: |
           gcc --version
-          python ../lib/sonar_proto/tools/run_cmd_parser_probe.py
+          python ../FW_SonarMotorDriver/lib/sonar_proto/tools/run_cmd_parser_probe.py
 
       # Каталог tests лежит внутри Software/SonarDebugGUI; запуск через
       # `python -m` кладёт рабочий каталог в sys.path, поэтому пакет sonar_gui

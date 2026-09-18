@@ -31,10 +31,14 @@ from _support import P, REPO_ROOT, Sim                 # noqa: E402
 # поиском по дереву, тест падает: значит, сверять больше не с чем.
 HEADER_CANDIDATES = (
     os.path.join("Software", "FW_SonarMotorDriver", "include", "cmd_parser.h"),
+    os.path.join("Software", "FW_SonarMotorDriver", "lib", "sonar_proto",
+                 "include", "cmd_parser.h"),
     os.path.join("Software", "lib", "sonar_proto", "include", "cmd_parser.h"),
 )
 SOURCE_CANDIDATES = (
     os.path.join("Software", "FW_SonarMotorDriver", "src", "cmd_parser.c"),
+    os.path.join("Software", "FW_SonarMotorDriver", "lib", "sonar_proto",
+                 "src", "cmd_parser.c"),
     os.path.join("Software", "lib", "sonar_proto", "src", "cmd_parser.c"),
 )
 # Каталоги сборки и индексов clangd: там лежат копии и артефакты, не исходник.

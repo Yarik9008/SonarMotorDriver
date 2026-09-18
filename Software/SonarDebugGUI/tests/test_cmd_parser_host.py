@@ -6,7 +6,8 @@ test_board_constants.py читают cmd_parser.h/.c регулярными вы
 `strcmp(line, "om")` → `strncmp(line, "om", 2)` проходит мимо всех регулярок,
 хотя после неё плата отвечает «om=0» на строки «omx» и «omm».
 
-Здесь Software/lib/sonar_proto/src/cmd_parser.c СОБИРАЕТСЯ хостовым gcc
+Здесь Software/FW_SonarMotorDriver/lib/sonar_proto/src/cmd_parser.c
+СОБИРАЕТСЯ хостовым gcc
 (tools/run_cmd_parser_probe.py, по образцу
 FW_AS5047P_STM32F103C8/tools/run_filter_model.sh) и ПРОГОНЯЕТСЯ на корпусе
 строк. Сверяется он с двумя источниками правды, которые есть в репозитории:
@@ -44,7 +45,8 @@ if _HERE not in sys.path:
 import _support     # noqa: F401,E402 - ставит sonar_gui на путь импорта
 from _support import P, REPO_ROOT, Sim                 # noqa: E402
 
-RUNNER_REL = os.path.join("Software", "lib", "sonar_proto", "tools",
+RUNNER_REL = os.path.join("Software", "FW_SonarMotorDriver", "lib",
+                          "sonar_proto", "tools",
                           "run_cmd_parser_probe.py")
 RUNNER_PATH = os.path.join(REPO_ROOT, RUNNER_REL)
 

@@ -30,7 +30,7 @@ import sys
 import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-LIB_DIR = os.path.dirname(_HERE)                       # Software/lib/sonar_proto
+LIB_DIR = os.path.dirname(_HERE)                       # .../lib/sonar_proto
 INCLUDE_DIR = os.path.join(LIB_DIR, "include")
 SRC_PARSER = os.path.join(LIB_DIR, "src", "cmd_parser.c")
 SRC_PROBE = os.path.join(_HERE, "cmd_parser_probe.c")

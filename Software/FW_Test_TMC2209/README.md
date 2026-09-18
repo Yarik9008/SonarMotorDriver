@@ -131,7 +131,7 @@ pio run
 Код проекта собирается со строгими предупреждениями `-Wall -Wextra`
 (`build_src_flags` в [platformio.ini](platformio.ini) — именно `build_src_flags`,
 чтобы флаги не попали на исходники STM32Cube HAL). Общие библиотеки из
-`Software/lib` включают те же флаги у себя в `library.json`. Сборка должна
+библиотеки включают те же флаги у себя в `library.json`. Сборка должна
 проходить без единого предупреждения в нашем коде.
 
 ### Загрузка (WCH-Link / CMSIS-DAP + OpenOCD)
@@ -223,18 +223,19 @@ Test_TMC2209/
 ```
 
 Библиотека драйвера вынесена в общий каталог
-[`../lib/tmc2209`](../lib/tmc2209/README.md) — одна копия на этот стенд и на
+[`../FW_SonarMotorDriver/lib/tmc2209`](../FW_SonarMotorDriver/lib/tmc2209/README.md) — одна копия на этот стенд и на
 основную прошивку `FW_SonarMotorDriver`, чтобы правки в протоколе TMC2209 не
 приходилось переносить руками:
 
 ```
-Software/lib/tmc2209/
+Software/FW_SonarMotorDriver/lib/tmc2209/
 ├── library.json
 ├── include/tmc2209/       — публичный API, карта регистров, типы, контракт порта
 └── src/                   — ядро протокола + порт STM32 HAL + фасад мотора
 ```
 
-Подключается строкой `lib_deps = symlink://../lib/tmc2209` в `platformio.ini`.
+Подключается строкой `lib_deps = symlink://../FW_SonarMotorDriver/lib/tmc2209`
+в `platformio.ini`.
 Библиотека берёт `board.h` из `include/` стенда — оттуда приходят
 `TMC2209_UART*`, токи, микрошаг и выводы STEP/DIR/ENN. Фасад `tmc2209_motor_*`
 стенду не нужен (импульсы STEP формирует сам `main.c`, VACTUAL задаётся
